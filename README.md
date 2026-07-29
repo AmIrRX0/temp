@@ -84,6 +84,33 @@ already widened.
 - **Leakage audit** — nothing in `environment/`, `tests/` or `solution/` names
   overflow, wrapping, staleness, or a bug.
 
+## Confirmed on hardware (RTX 2050, 4 GiB, inside the task's own image)
+
+`tools/verify_first.py`:
+
+- **The wrap starts at exactly the predicted lane** — 838861 predicted, 838861
+  observed. Not approximate; the arithmetic boundary.
+- **Silent and tail-confined** — 1134 of 840000 values in a row wrong, every one
+  of them zero, all at the end, CUDA context alive afterwards. (1139 lanes are
+  masked; about five of them happened to hold a genuine zero, so they do not
+  register as wrong.)
+- **All five layouts as designed** — large contiguous, small transposed and small
+  contiguous correct; large transposed and large-transposed-strided wrong.
+- **The key collides for the failing pair and separates packed from unpacked**,
+  and all four call sequences behave as designed.
+- **A stale plan gives 640 wrong values, only 3 of them zero** — misread real
+  data, not masking.
+- **Patched library correct everywhere**: no layout, sequence or value wrong.
+- **Peak 2.12 GiB** against 3.23 GiB free.
+
+`tools/verify_harness.py`, through the real verifier:
+
+- `nop` -> reward **0**, 29/29 outcomes as expected (exactly the 8 `fail_to_pass`
+  `FAILED`, all 21 `pass_to_pass` `PASSED`, nothing ERRORed).
+- `oracle` -> reward **1**, 29/29.
+- `--independence` -> repairing A alone leaves B's four failing and vice versa,
+  29/29 each way.
+
 ## Environment lessons carried over from v1
 
 - **The `-runtime` base image has no C compiler.** Triton builds a CPython
