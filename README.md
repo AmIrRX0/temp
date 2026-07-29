@@ -14,7 +14,8 @@ task5/                      # this is the zip root
 └── task.toml
 tools/
 ├── verify_first.py         # RUN THIS ON A GPU BOX FIRST
-└── make_zip.py             # forward-slash archive builder (S8)
+├── verify_harness.py       # runs the real verifier on a GPU without Harbor
+└── make_zip.py             # forward-slash, LF-normalising archive builder (S8)
 ```
 
 ## The two defects
@@ -110,6 +111,16 @@ Also found by running Harbor:
   image builds, `test.sh` runs, `parser.py` reported all 21 test names correctly
   into `report.json` (so `config.json` matches what pytest prints), both reward
   paths were written, and the oracle agent log shows `solution applied`.
+
+- **A Windows checkout leaves CRLF in the working tree**, and `bash` in the
+  container then dies with `$'\r': command not found` on every line of
+  `test.sh`. `.gitattributes` only helps a checkout made *after* it exists, so a
+  tree cloned earlier stays broken. The dangerous part was that `make_zip.py`
+  read those same bytes, so the submitted archive would have carried CRLF into
+  QA's Linux run. `make_zip.py` now normalises text files to LF on the way in,
+  sets `0o755` on `.sh`, uses a fixed timestamp, and re-opens the archive to
+  assert no CRLF survived. `verify_harness.py` stages `tests/` and the library
+  the same way, so it exercises what ships rather than what is on disk.
 
 Still outstanding:
 

@@ -44,10 +44,40 @@ def build_image() -> None:
     print("image built")
 
 
+def stage_tests(workdir: pathlib.Path) -> pathlib.Path:
+    """Copy tests/ with LF line endings, the way make_zip.py ships them.
+
+    A Windows checkout can leave CRLF in the working tree, and bash then fails
+    on every line of test.sh with "$'\\r': command not found". Normalising here
+    means this check exercises the files as they will be submitted rather than
+    as they happen to sit on this host's disk.
+    """
+    target = workdir / "tests"
+    target.mkdir(parents=True)
+    touched = []
+    for source in sorted((TESTS).iterdir()):
+        if not source.is_file():
+            continue
+        data = source.read_bytes()
+        fixed = data.replace(b"\r\n", b"\n")
+        if fixed != data:
+            touched.append(source.name)
+        (target / source.name).write_bytes(fixed)
+    if touched:
+        print(f"note: normalised CRLF -> LF in {', '.join(touched)}")
+        print("      your working tree has CRLF; run this to fix it:")
+        print("      git rm --cached -r . ; git reset --hard")
+    return target
+
+
 def stage_library(workdir: pathlib.Path, patched: bool) -> pathlib.Path:
     target = workdir / ("fixed" if patched else "shipped")
     target.mkdir(parents=True)
     shutil.copytree(ENVIRONMENT / "gatherlib", target / "gatherlib")
+    # Same reason as stage_tests: exercise the files as they ship, LF only.
+    for source in (target / "gatherlib").rglob("*.py"):
+        data = source.read_bytes()
+        source.write_bytes(data.replace(b"\r\n", b"\n"))
     if patched:
         body = SOLVE.read_text()
         inner = body.split("python3 - <<'PY'", 1)[1].split("\nPY\n", 1)[0]
@@ -57,12 +87,13 @@ def stage_library(workdir: pathlib.Path, patched: bool) -> pathlib.Path:
     return target / "gatherlib"
 
 
-def run_verifier(library: pathlib.Path, logs: pathlib.Path) -> tuple[str, dict]:
+def run_verifier(library: pathlib.Path, tests: pathlib.Path,
+                 logs: pathlib.Path) -> tuple[str, dict]:
     logs.mkdir(parents=True, exist_ok=True)
     cmd = [
         "docker", "run", "--rm", "--gpus", "all", "--shm-size=1g",
         "-v", f"{library}:/workspace/gatherlib",
-        "-v", f"{TESTS}:/tests:ro",
+        "-v", f"{tests}:/tests:ro",
         "-v", f"{logs}:/logs",
         IMAGE, "bash", "/tests/test.sh",
     ]
@@ -141,15 +172,16 @@ def main() -> int:
     problems: list[str] = []
     with tempfile.TemporaryDirectory() as tmp:
         workdir = pathlib.Path(tmp)
+        tests = stage_tests(workdir)
 
         print("\n--- as shipped (Harbor's nop) ---")
         lib = stage_library(workdir, patched=False)
-        reward, report = run_verifier(lib, workdir / "logs_shipped")
+        reward, report = run_verifier(lib, tests, workdir / "logs_shipped")
         problems += check("nop", reward, report, "0", f2p, p2p)
 
         print("\n--- with solve.sh applied (Harbor's oracle) ---")
         lib = stage_library(workdir, patched=True)
-        reward, report = run_verifier(lib, workdir / "logs_fixed")
+        reward, report = run_verifier(lib, tests, workdir / "logs_fixed")
         problems += check("oracle", reward, report, "1", f2p, p2p)
 
     print()
