@@ -65,14 +65,28 @@ Found on real hardware and fixed:
   (`runtime/build.py:_build`), so every test errored with
   `Failed to find C compiler` before any kernel ran. The Dockerfile now installs
   `gcc` and asserts at build time that the compiler and the Python headers work
-  together. Without this the `oracle` run could never have reached 1.0.
+  together, resolving the include directory the way Triton's builder does.
+  Without this the `oracle` run could never have reached 1.0.
 
-**Not verified — needs a GPU:**
+**Confirmed on hardware** (RTX 2050, 4 GiB, inside the task's own image):
 
-- That the wrap happens in *generated* code (the type rules say it must; LLVM
-  codegen has not been observed).
-- That the masked load really leaves the CUDA context alive.
-- Actual device memory use.
+- **The int32 wrap happens in generated code, at exactly the predicted row.**
+  `2**31 // 2560 + 1` = 838861. Row 838860 gathers correctly, row 838861 does
+  not. The boundary is not approximate -- it is the arithmetic boundary.
+- **The wrap is silent.** Every wrong row comes back entirely zero, i.e. the
+  bounds clamp masked the negative offset, and the CUDA context is still alive
+  afterwards. No illegal memory access. This is what the clamp was added for:
+  Idea 5 as written would have faulted instead, which would have taken down the
+  `pass_to_pass` set too.
+- **All seven layouts behave as designed** -- contiguous, transposed,
+  column-strided and row-offset correct; row-step-sliced, column-narrowed and
+  column-windowed wrong.
+- **The patched library is correct everywhere**, including at the boundary.
+- **The correct sibling kernel is unaffected** on the same full size table.
+- **Memory: 2.12 GiB peak** against 3.23 GiB free on a 4 GiB card.
+
+Still outstanding:
+
 - `harbor run -a nop` / `-a oracle`.
 
 ## Run order on the GPU box
