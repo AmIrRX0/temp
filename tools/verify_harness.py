@@ -16,6 +16,7 @@ Needs only the standard library plus a working `docker`. Run from the repo root:
 
 from __future__ import annotations
 
+import argparse
 import json
 import pathlib
 import shutil
@@ -70,20 +71,53 @@ def stage_tests(workdir: pathlib.Path) -> pathlib.Path:
     return target
 
 
-def stage_library(workdir: pathlib.Path, patched: bool) -> pathlib.Path:
-    target = workdir / ("fixed" if patched else "shipped")
+# The one-line edits that make up the two halves of solve.sh, so a single
+# defect can be repaired on its own to prove the two are independent.
+PARTIAL_FIXES = {
+    "A": (
+        "kernels/gather.py",
+        "    row_base = src_row * row_pitch\n",
+        "    row_base = src_row.to(tl.int64) * row_pitch\n",
+    ),
+    "B": (
+        "addressing.py",
+        "        return int(table.shape[-1]), 1\n",
+        "        return int(table.stride(-2)), 1\n",
+    ),
+}
+
+
+def stage_library(workdir: pathlib.Path, parts: tuple[str, ...],
+                  label: str) -> pathlib.Path:
+    """Stage the library with none, one, or both defects repaired.
+
+    ``parts`` of ("A", "B") goes through solve.sh itself, so the shipped oracle
+    stays the thing under test. A single part applies just that edit.
+    """
+    target = workdir / label
+    if target.exists():
+        shutil.rmtree(target)
     target.mkdir(parents=True)
     shutil.copytree(ENVIRONMENT / "gatherlib", target / "gatherlib")
     # Same reason as stage_tests: exercise the files as they ship, LF only.
     for source in (target / "gatherlib").rglob("*.py"):
         data = source.read_bytes()
         source.write_bytes(data.replace(b"\r\n", b"\n"))
-    if patched:
+
+    if set(parts) == {"A", "B"}:
         body = SOLVE.read_text()
         inner = body.split("python3 - <<'PY'", 1)[1].split("\nPY\n", 1)[0]
         script = workdir / "patch.py"
         script.write_text(inner)
         run([sys.executable, str(script)], cwd=target, check=True)
+    else:
+        for part in parts:
+            relative, old, new = PARTIAL_FIXES[part]
+            path = target / "gatherlib" / relative
+            source = path.read_text()
+            if source.count(old) != 1:
+                raise SystemExit(f"{relative}: expected exactly one match for fix {part}")
+            path.write_text(source.replace(old, new))
     return target / "gatherlib"
 
 
@@ -122,7 +156,7 @@ def run_verifier(library: pathlib.Path, tests: pathlib.Path,
 
 
 def check(label: str, reward: str, report: dict, want_reward: str,
-          must_fail: list[str], must_pass: list[str]) -> list[str]:
+          expected: dict[str, str]) -> list[str]:
     print()
     print("=" * 74)
     print(f"{label}: reward={reward} (expected {want_reward})")
@@ -132,9 +166,9 @@ def check(label: str, reward: str, report: dict, want_reward: str,
     if reward != want_reward:
         problems.append(f"{label}: reward {reward}, expected {want_reward}")
 
-    missing = [n for n in must_fail + must_pass if n not in report]
-    for name in missing:
-        problems.append(f"{label}: {name} never ran")
+    for name in expected:
+        if name not in report:
+            problems.append(f"{label}: {name} never ran")
 
     errored = [n for n, s in report.items() if s == "ERROR"]
     if errored:
@@ -143,46 +177,86 @@ def check(label: str, reward: str, report: dict, want_reward: str,
             f"first: {errored[0]}"
         )
 
-    bad_fail = [n for n in must_fail if report.get(n) != ("FAILED" if want_reward == "0" else "PASSED")]
-    bad_pass = [n for n in must_pass if report.get(n) != "PASSED"]
-
-    expected_state = "FAILED" if want_reward == "0" else "PASSED"
-    print(f"  fail_to_pass expected {expected_state}: "
-          f"{len(must_fail) - len(bad_fail)}/{len(must_fail)} as expected")
-    print(f"  pass_to_pass expected PASSED : "
-          f"{len(must_pass) - len(bad_pass)}/{len(must_pass)} as expected")
-
-    for name in bad_fail:
-        print(f"  !! {name} -> {report.get(name)} (wanted {expected_state})")
-        problems.append(f"{label}: {name} -> {report.get(name)}, wanted {expected_state}")
-    for name in bad_pass:
-        print(f"  !! {name} -> {report.get(name)} (wanted PASSED)")
-        problems.append(f"{label}: {name} -> {report.get(name)}, wanted PASSED")
-    if not bad_fail and not bad_pass:
+    wrong = {n: report.get(n) for n, want in expected.items() if report.get(n) != want}
+    print(f"  {len(expected) - len(wrong)}/{len(expected)} outcomes as expected")
+    for name, got in wrong.items():
+        print(f"  !! {name} -> {got} (wanted {expected[name]})")
+        problems.append(f"{label}: {name} -> {got}, wanted {expected[name]}")
+    if not wrong:
         print("  all outcomes as expected")
     return problems
 
 
+# Which fail_to_pass tests each defect is responsible for. Used only by the
+# independence check.
+OWNED_BY = {
+    "A": [
+        "test_gather_matches_direct_indexing_on_a_full_size_table",
+        "test_gather_matches_index_select_on_a_full_size_table",
+        "test_gather_matches_per_row_reference_on_a_full_size_table",
+        "test_gather_of_one_row_matches_that_row_on_a_full_size_table",
+    ],
+    "B": [
+        "test_gather_matches_reference_for_a_row_step_sliced_table",
+        "test_gather_matches_reference_for_a_column_narrowed_table",
+        "test_gather_matches_reference_for_a_column_windowed_table",
+        "test_gather_agrees_across_tables_holding_the_same_values",
+    ],
+}
+
+
 def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--independence",
+        action="store_true",
+        help="instead of nop/oracle, repair one defect at a time and confirm the "
+             "other one still fails its own tests (S9 item 4)",
+    )
+    args = parser.parse_args()
+
     config = json.loads(CONFIG.read_text())
     f2p, p2p = config["fail_to_pass"], config["pass_to_pass"]
     print(f"{len(f2p)} fail_to_pass, {len(p2p)} pass_to_pass")
+
+    covered = OWNED_BY["A"] + OWNED_BY["B"]
+    if sorted(covered) != sorted(f2p):
+        raise SystemExit(
+            "OWNED_BY does not partition fail_to_pass; update it alongside config.json"
+        )
 
     build_image()
     problems: list[str] = []
     with tempfile.TemporaryDirectory() as tmp:
         workdir = pathlib.Path(tmp)
         tests = stage_tests(workdir)
+        all_pass = {n: "PASSED" for n in f2p + p2p}
 
-        print("\n--- as shipped (Harbor's nop) ---")
-        lib = stage_library(workdir, patched=False)
-        reward, report = run_verifier(lib, tests, workdir / "logs_shipped")
-        problems += check("nop", reward, report, "0", f2p, p2p)
+        if args.independence:
+            for part, other in (("A", "B"), ("B", "A")):
+                print(f"\n--- only defect {part} repaired ---")
+                library = stage_library(workdir, (part,), f"only_{part}")
+                reward, report = run_verifier(library, tests, workdir / f"logs_{part}")
+                expected = dict(all_pass)
+                for name in OWNED_BY[other]:
+                    expected[name] = "FAILED"
+                problems += check(
+                    f"only {part} fixed (defect {other} remains)",
+                    reward, report, "0", expected,
+                )
+        else:
+            print("\n--- as shipped (Harbor's nop) ---")
+            library = stage_library(workdir, (), "shipped")
+            reward, report = run_verifier(library, tests, workdir / "logs_shipped")
+            expected = dict(all_pass)
+            for name in f2p:
+                expected[name] = "FAILED"
+            problems += check("nop", reward, report, "0", expected)
 
-        print("\n--- with solve.sh applied (Harbor's oracle) ---")
-        lib = stage_library(workdir, patched=True)
-        reward, report = run_verifier(lib, tests, workdir / "logs_fixed")
-        problems += check("oracle", reward, report, "1", f2p, p2p)
+            print("\n--- with solve.sh applied (Harbor's oracle) ---")
+            library = stage_library(workdir, ("A", "B"), "fixed")
+            reward, report = run_verifier(library, tests, workdir / "logs_fixed")
+            problems += check("oracle", reward, report, "1", all_pass)
 
     print()
     print("=" * 74)
@@ -191,8 +265,12 @@ def main() -> int:
         for item in problems:
             print(f"  - {item}")
         return 1
-    print("VERDICT: nop gives 0 with exactly the fail_to_pass set failing,")
-    print("         oracle gives 1 with everything passing.")
+    if args.independence:
+        print("VERDICT: each defect fails its own tests with the other repaired,")
+        print("         so the two are independent (S9 item 4).")
+    else:
+        print("VERDICT: nop gives 0 with exactly the fail_to_pass set failing,")
+        print("         oracle gives 1 with everything passing.")
     return 0
 
 

@@ -122,9 +122,18 @@ Also found by running Harbor:
   assert no CRLF survived. `verify_harness.py` stages `tests/` and the library
   the same way, so it exercises what ships rather than what is on disk.
 
+**Confirmed by `tools/verify_harness.py`** on the GPU, through the real verifier:
+
+- `nop` -> reward **0**, exactly the 8 `fail_to_pass` `FAILED`, all 13
+  `pass_to_pass` `PASSED`. Nothing ERRORs.
+- `oracle` -> reward **1**, all 21 `PASSED`.
+- Both reward paths written (`reward.txt` and `rewards/reward.txt`).
+
 Still outstanding:
 
-- `python tools/verify_harness.py` -- the pass/fail outcomes on a GPU.
+- `python tools/verify_harness.py --independence` -- repairs one defect at a
+  time and confirms the other still fails its own tests (S9 item 4). Verified by
+  CPU simulation already; this confirms it through the verifier.
 - Optionally a real `harbor run` on a GPU-capable `--env` backend.
 
 ## Run order on the GPU box
