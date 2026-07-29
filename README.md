@@ -85,9 +85,18 @@ Found on real hardware and fixed:
 - **The correct sibling kernel is unaffected** on the same full size table.
 - **Memory: 2.12 GiB peak** against 3.23 GiB free on a 4 GiB card.
 
+Also found by running Harbor:
+
+- **`task.toml` needs `gpus` under `[environment]`.** Without it Harbor brings
+  the container up with no device and all 21 tests error with
+  `Found no NVIDIA driver`, which makes the `nop` run report 0.0 for entirely
+  the wrong reason. The key name comes from Harbor's own trial config, which
+  carries an `override_gpus` field alongside `override_cpus`,
+  `override_memory_mb` and `override_storage_mb`.
+
 Still outstanding:
 
-- `harbor run -a nop` / `-a oracle`.
+- `harbor run -a nop` / `-a oracle` on a GPU-enabled container.
 
 ## Run order on the GPU box
 
