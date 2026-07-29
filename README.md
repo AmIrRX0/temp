@@ -58,6 +58,15 @@ Verified in this container (no GPU here):
   `int32`, `int64`, `overflow`, `wrap`, `bug`, `wrong` anywhere in
   `environment/`, `tests/` or `solution/`.
 
+Found on real hardware and fixed:
+
+- **The `-runtime` base image has no C compiler.** Triton builds a CPython
+  extension for its CUDA driver shim on the first kernel launch
+  (`runtime/build.py:_build`), so every test errored with
+  `Failed to find C compiler` before any kernel ran. The Dockerfile now installs
+  `gcc` and asserts at build time that the compiler and the Python headers work
+  together. Without this the `oracle` run could never have reached 1.0.
+
 **Not verified — needs a GPU:**
 
 - That the wrap happens in *generated* code (the type rules say it must; LLVM
