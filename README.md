@@ -104,6 +104,25 @@ python tools\verify_harness.py --independence
 python tools\make_zip.py
 ```
 
+## Measuring difficulty with a solver agent
+
+Do **not** hand a solver the submission archive: `solution/solve.sh`,
+`task_reasoning.md` and `task.toml` each state the answer outright.
+
+```powershell
+python tools\make_solver_zip.py        # instruction.md + environment/ only
+```
+
+`tests/` is excluded on purpose. Harbor never shows the agent the suite, and
+this task's fail_to_pass names describe both triggers — one says "an earlier
+gather from a wider table", the other says "a transposed full size table". A
+solver given those is being measured on reading test names, not on the defects.
+`--with-tests` exists for a second, weaker run.
+
+The packager refuses to build from a tree where `solve.sh` has already been
+applied, so a leftover repair cannot silently produce a package with no bug in
+it.
+
 ## Device memory
 
 One allocation of `840000 × 2560` int8 = **2.003 GiB** backs every full-size
