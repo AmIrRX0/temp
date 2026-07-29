@@ -76,13 +76,13 @@ def stage_tests(workdir: pathlib.Path) -> pathlib.Path:
 PARTIAL_FIXES = {
     "A": (
         "kernels/gather.py",
-        "    row_base = src_row * row_pitch\n",
-        "    row_base = src_row.to(tl.int64) * row_pitch\n",
+        "    src_off = src_row.to(tl.int64) * row_pitch + lane * col_pitch\n",
+        "    src_off = src_row.to(tl.int64) * row_pitch + lane.to(tl.int64) * col_pitch\n",
     ),
     "B": (
-        "addressing.py",
-        "        return int(table.shape[-1]), 1\n",
-        "        return int(table.stride(-2)), 1\n",
+        "cache.py",
+        "        table.is_contiguous(),\n",
+        "        tuple(int(s) for s in table.stride()),\n",
     ),
 }
 
@@ -191,16 +191,16 @@ def check(label: str, reward: str, report: dict, want_reward: str,
 # independence check.
 OWNED_BY = {
     "A": [
-        "test_gather_matches_direct_indexing_on_a_full_size_table",
-        "test_gather_matches_index_select_on_a_full_size_table",
-        "test_gather_matches_per_row_reference_on_a_full_size_table",
-        "test_gather_of_one_row_matches_that_row_on_a_full_size_table",
+        "test_gather_matches_direct_indexing_on_a_transposed_full_size_table",
+        "test_gather_matches_index_select_on_a_transposed_full_size_table",
+        "test_gather_matches_per_row_reference_on_a_transposed_full_size_table",
+        "test_gather_matches_direct_indexing_on_a_strided_full_size_table",
     ],
     "B": [
-        "test_gather_matches_reference_for_a_row_step_sliced_table",
-        "test_gather_matches_reference_for_a_column_narrowed_table",
-        "test_gather_matches_reference_for_a_column_windowed_table",
-        "test_gather_agrees_across_tables_holding_the_same_values",
+        "test_gather_is_unaffected_by_an_earlier_gather_from_a_wider_table",
+        "test_gather_is_unaffected_by_an_earlier_gather_from_a_narrower_table",
+        "test_gather_is_correct_for_every_table_in_a_mixed_sequence",
+        "test_gather_is_correct_for_two_views_of_one_allocation",
     ],
 }
 

@@ -1,64 +1,86 @@
-version = "1.0"
+version = "2.0"
 
 [metadata]
 category = "Kernel Structural Correctness"
 secondary_categories = ["Tensor / Memory Layout"]
-tags = ["pytorch", "triton", "gpu-kernels", "addressing", "strides", "int64-indexing"]
+tags = ["pytorch", "triton", "gpu-kernels", "addressing", "strides", "caching", "int64-indexing"]
 difficulty = "hard"
 difficulty_explanation = """
-Two silent and independent defects sit in two different files and neither of
-them can be diagnosed by reading the file it lives in. The gather kernel's
-address arithmetic is correct as written if integers are as wide as a reader
-assumes they are, and the width does not come from anywhere in the repository:
-it comes from Triton's own type rules, where tl.arange is int32 and a Python
-int argument is specialised as i32 whenever it fits. The kernel visibly widens
-to 64 bit, just on the column term and the output offset instead of on the row
-base, so the surface signal says the concern was handled. The kernel also
-clamps every offset against the span of the table, which is the reason the
-wrapped offset returns zeros rather than raising an illegal memory access, and
-the same clamp appears in both correct sibling kernels so it does not mark the
-broken one. The second defect derives a row pitch from the table's shape rather
-than its stride, and it is correct for a fully contiguous table and also for a
-transposed or column strided one, so the obvious hypothesis that views are
-broken is wrong and the pass_to_pass set rewards it. Nothing raises, nothing
-warns, and every shape and dtype is right throughout.
+Two silent independent defects sit in two different files, and neither can be
+diagnosed by reading the file it lives in.
+
+The kernel widens the row term of its offset to 64 bit and leaves the lane term
+at 32 bit. Since lane comes from tl.arange, which Triton types as int32, the
+product with the column pitch wraps, but only when the column pitch is large,
+and the column pitch is only large when the table is addressed down a column.
+So the trigger is a conjunction: big enough that a pitch times an index crosses
+2^31, and laid out so that the big pitch is the one multiplied by the lane. A
+large contiguous table is fine, a small transposed table is fine, and a large
+transposed table quietly loses the last fraction of a percent of every row.
+Nothing in the package widens a lane index anywhere else, so there is no
+correct exemplar to copy and no diff that hands over the answer: the two sibling
+kernels declare that they need a packed trailing axis and walk a row with a
+plain add, which is a real, validated restriction rather than a contrivance.
+
+The second defect is a memoised access plan whose key is shape, dtype, device,
+contiguity and config. Contiguity makes the key look layout-aware and does
+separate a packed table from a view. It does not separate two unpacked views of
+each other's shape, which agree on every element of the key and disagree on row
+pitch, so the second table gathered is served the first one's pitches. The key
+looks entirely reasonable in isolation; seeing the hole means reading a
+different file to find out what the plan is actually derived from, and then
+constructing a sequence of calls to observe it, because every layout involved is
+correct when gathered on its own.
+
+Nothing raises, nothing warns, and every shape and dtype is right throughout.
+The pass_to_pass set rewards the wrong hypotheses: size alone is fine, layout
+alone is fine, each view alone is fine, and probing whether state leaks between
+a packed and an unpacked table of the same shape comes back clean. A decoy
+repair is available too, since row ids are narrowed to int32 in a third file,
+which looks like the cause of an overflow but is not.
 """
 solution_explanation = """
-The first fix is to widen the row id before it is multiplied by the row pitch,
-so the row base is computed in 64 bit rather than wrapping in 32 bit. The
-second fix is to make the packed layout fast path take its row pitch from
-stride(-2) instead of from shape[-1], which is what the general branch of the
-same function already does. Neither fix changes any signature and neither one
-touches the two correct sibling kernels.
+The first fix is to widen the lane index before it is multiplied by the column
+pitch, so the offset within a row is computed in 64 bit rather than wrapping in
+32 bit. The second is to key the plan cache on the table's strides instead of on
+whether it is contiguous, which is what the plan is actually derived from.
+Neither fix changes a signature and neither touches the two sibling kernels.
 """
 verification_explanation = """
-For fail_to_pass: gathering from a table that spans more than 2^31 elements,
-checked three separate ways against torch's own advanced indexing, against
-torch.index_select, and against a loop that fetches each row on its own, plus
-the single row case; and gathering from a row step sliced table, a column
-narrowed table and a column windowed table, each against a gather done in
-plain Python over tensor.cpu().tolist(); plus an equality check between a view
-and a packed copy of the same data.
-For pass_to_pass: a contiguous table, a transposed table, a column step sliced
-table and a row offset table all gather correctly already; the output's shape,
-dtype, device and contiguity contract; both index dtypes accepted; the
-block_size knob changing no value; both sibling kernels, including the row sum
-kernel on the same full size table; an out of range row id still raising; and
-the registry still exposing three names.
+For fail_to_pass: gathering from a table that is both large and addressed down a
+column, checked against torch's advanced indexing, against torch.index_select,
+against a loop that fetches each row on its own, and once more through a
+doubly strided view of the same allocation; plus four sequence cases where a
+gather from one unpacked view is preceded by a gather from another unpacked view
+of the same shape and a different pitch, in both orders, over a mixed run of
+three pitches, and over two views carved out of a single allocation.
+For pass_to_pass: a large contiguous table, a small transposed table, a column
+step sliced table, a row step sliced table, and each unpacked view on its own,
+all already correct; a packed gather followed by an unpacked gather of equal
+shape; an unpacked gather preceded by one of a different shape; repeated gathers
+from one table; the output's shape, dtype, device and contiguity contract; both
+index dtypes; the block_size knob changing no value; both sibling kernels,
+including the row sum kernel on the same full size table; the packed trailing
+axis requirement still raising; an out of range row id still raising; the plan
+cache still inspectable and clearable; and the registry still exposing three
+names.
 No comparison is made against this package's own output, so editing the library
 cannot make a wrong answer look right. One pass_to_pass test swaps the compiled
-kernel for a tripwire and asserts the gather still launches it, so replacing
-the kernel with torch indexing cannot pass the suite either.
-The full size fixture allocates 2.003 GiB on the device and the suite needs
-roughly 2.5 GiB of free device memory in total.
+kernel for a tripwire and asserts the gather still launches it, so replacing the
+kernel with torch indexing cannot pass the suite either. An autouse fixture
+empties the plan cache around every test, so only the tests that are about a
+sequence of calls ever see one.
+One allocation of 840000 by 2560 int8 (2.003 GiB) backs every full size case and
+its transpose is the second layout over the same bytes; the suite needs roughly
+2.5 GiB of free device memory.
 """
-expert_time_estimate_hours = 5.0
+expert_time_estimate_hours = 6.5
 
 [verifier]
-timeout_sec = 1800
+timeout_sec = 2400
 
 [agent]
-timeout_sec = 1800
+timeout_sec = 2400
 
 [environment]
 build_timeout_sec = 1800

@@ -1,20 +1,26 @@
 #!/usr/bin/env python3
-"""Verify-first harness for the gatherlib task. Run this on a GPU box.
+"""Verify-first harness for the gatherlib task. Run this on a GPU.
 
-It answers the four questions that decide whether the task is viable, and that
-cannot be answered without a CUDA device:
+Answers the questions that decide whether the task is viable and that cannot be
+answered without a CUDA device:
 
-  1. Does the int32 row base actually wrap in generated Triton code?
-  2. Is the wrap *silent* -- zeros through the bounds clamp, not an illegal
-     memory access that poisons the CUDA context?
-  3. Which layouts does the pitch helper get wrong, and which does it get right
-     (the pass_to_pass set depends on the right ones)?
-  4. How much device memory does the full size fixture actually need?
+  1. Does the 32-bit lane product actually wrap in generated Triton code, and at
+     exactly the predicted lane?
+  2. Is the wrap silent -- clamped to zeros rather than an illegal access that
+     poisons the CUDA context -- and confined to the tail of a row?
+  3. Do the cases that must stay correct stay correct: a large contiguous table,
+     a small transposed table?
+  4. Does the plan cache key really collide for two unpacked views of one shape,
+     while still separating a packed table from a view?
+  5. How much device memory does the shared full size allocation need?
 
 Usage
 -----
     python tools/verify_first.py                # run everything, print verdict
     python tools/verify_first.py --probe DIR    # internal single-variant probe
+
+On a Windows host use tools/verify_in_docker.ps1, which runs this inside the
+task's own image; Triton has no official Windows support.
 
 Exit code is 0 only if every expectation holds.
 """
@@ -35,54 +41,29 @@ REPO = pathlib.Path(__file__).resolve().parent.parent
 ENVIRONMENT = REPO / "task5" / "environment"
 SOLVE = REPO / "task5" / "solution" / "solve.sh"
 
-ROW_LEN = 2560
-TABLE_ROWS = 840_000
-PROBE_ROWS = [5, 4099, 300_000, 700_000, 838_000, 839_101, 839_999]
+STORE_ROWS = 840_000
+STORE_COLS = 2_560
 
 # Layout name -> expected verdict for the code as shipped.
-# "ok" layouts back the pass_to_pass set; "wrong" ones back fail_to_pass.
 EXPECTED_LAYOUTS = {
-    "contiguous": "ok",
-    "transposed": "ok",
-    "column_step": "ok",
-    "row_offset": "ok",
-    "row_step": "wrong",
-    "column_narrow": "wrong",
-    "column_window": "wrong",
+    "large_contiguous": "ok",
+    "small_transposed": "ok",
+    "small_contiguous": "ok",
+    "large_transposed": "wrong",
+    "large_transposed_strided": "wrong",
 }
 
 
-# ---------------------------------------------------------------------------
-# probe: runs inside a subprocess against one copy of the library
-# ---------------------------------------------------------------------------
-
-
-def build_full_table(torch, device="cuda"):
-    table = torch.empty((TABLE_ROWS, ROW_LEN), dtype=torch.int8, device=device)
-    col = torch.arange(ROW_LEN, device=device, dtype=torch.int32)
+def build_store(torch, device="cuda"):
+    table = torch.empty((STORE_ROWS, STORE_COLS), dtype=torch.int8, device=device)
+    col = torch.arange(STORE_COLS, device=device, dtype=torch.int32)
     chunk = 4096
-    for start in range(0, TABLE_ROWS, chunk):
-        stop = min(start + chunk, TABLE_ROWS)
+    for start in range(0, STORE_ROWS, chunk):
+        stop = min(start + chunk, STORE_ROWS)
         rows = torch.arange(start, stop, device=device, dtype=torch.int32).unsqueeze(1)
         block = (rows * 37 + col * 11 + (rows >> 3)) % 251 - 125
         table[start:stop].copy_(block)
     return table
-
-
-def layout_cases(torch, device="cuda"):
-    generator = torch.Generator().manual_seed(20250729)
-    base = torch.randint(
-        -120, 120, (96, 128), dtype=torch.int8, generator=generator
-    ).to(device)
-    return {
-        "contiguous": base,
-        "transposed": base.t(),
-        "column_step": base[:, ::2],
-        "row_offset": base[8:],
-        "row_step": base[::3],
-        "column_narrow": base[:, :64],
-        "column_window": base[:, 16:80],
-    }
 
 
 def probe(source_dir: str) -> dict:
@@ -91,7 +72,7 @@ def probe(source_dir: str) -> dict:
 
     try:
         import torch
-        import triton
+        import triton  # noqa: F401
     except ImportError as exc:
         return {
             "fatal": f"{exc}. This probe needs torch and Triton on a CUDA device. "
@@ -115,66 +96,120 @@ def probe(source_dir: str) -> dict:
     report["device_free_gib"] = round(free / 2**30, 3)
     report["device_total_gib"] = round(total / 2**30, 3)
 
-    from gatherlib import gather_rows, row_sums
+    from gatherlib import clear_plans, gather_rows, plan_for
+    from gatherlib.cache import plan_key
+    from gatherlib.config import DEFAULT_CONFIG
 
-    # --- layouts -----------------------------------------------------------
+    # ---- small layouts ----------------------------------------------------
+    generator = torch.Generator().manual_seed(20250729)
+    small = torch.randint(
+        -120, 120, (96, 128), dtype=torch.int8, generator=generator
+    ).cuda()
     picks = [0, 3, 11, 17, 4, 3]
     ids = torch.tensor(picks, dtype=torch.int64, device="cuda")
-    layouts = {}
-    for name, table in layout_cases(torch).items():
+
+    def check_layout(table):
+        clear_plans()
         values = table.cpu().tolist()
         want = [list(values[r]) for r in picks]
-        got = gather_rows(table, ids).cpu().tolist()
-        layouts[name] = "ok" if got == want else "wrong"
-    report["layouts"] = layouts
+        return "ok" if gather_rows(table, ids).cpu().tolist() == want else "wrong"
 
-    # --- full size table ---------------------------------------------------
-    torch.cuda.reset_peak_memory_stats()
-    table = build_full_table(torch)
-    report["table_gib"] = round(table.numel() / 2**30, 4)
-
-    picked = torch.tensor(PROBE_ROWS, dtype=torch.int64, device="cuda")
-    got = gather_rows(table, picked)
-    want = table[picked]
-    torch.cuda.synchronize()
-
-    mismatched, all_zero = [], []
-    for i, row in enumerate(PROBE_ROWS):
-        same = bool(torch.equal(got[i], want[i]))
-        if not same:
-            mismatched.append(row)
-            if not bool(got[i].any()):
-                all_zero.append(row)
-    report["mismatched_rows"] = mismatched
-    report["mismatched_rows_that_are_all_zero"] = all_zero
-
-    # Exact boundary: first row whose flat base crosses 2**31.
-    boundary = 2**31 // ROW_LEN + 1
-    window = [boundary - 2, boundary - 1, boundary, boundary + 1]
-    w_ids = torch.tensor(window, dtype=torch.int64, device="cuda")
-    w_got = gather_rows(table, w_ids)
-    w_want = table[w_ids]
-    report["predicted_first_failing_row"] = boundary
-    report["boundary_window"] = {
-        str(r): bool(torch.equal(w_got[i], w_want[i])) for i, r in enumerate(window)
+    layouts = {
+        "small_contiguous": check_layout(small),
+        "small_transposed": check_layout(small.t()),
     }
 
-    # The correct sibling kernel must be unaffected on the same table.
-    sums = row_sums(table, picked)
-    ref = torch.index_select(table, 0, picked).to(torch.int64).sum(dim=1)
-    report["sibling_kernel_ok"] = sums.cpu().tolist() == ref.to(torch.float32).cpu().tolist()
+    # ---- the shared full size allocation ---------------------------------
+    torch.cuda.reset_peak_memory_stats()
+    store = build_store(torch)
+    report["store_gib"] = round(store.numel() / 2**30, 4)
 
-    # A live context after the gather proves nothing faulted.
+    def check_big(table, rows):
+        clear_plans()
+        picked = torch.tensor(rows, dtype=torch.int64, device="cuda")
+        got = gather_rows(table, picked)
+        want = table[picked]
+        if bool(torch.equal(got, want)):
+            return "ok", None
+        differing = (got != want).nonzero()
+        return "wrong", int(differing[0][1])
+
+    layouts["large_contiguous"], _ = check_big(store, [5, 300_000, 839_999])
+    layouts["large_transposed"], first_bad = check_big(store.t(), [0, 700, 2559])
+    layouts["large_transposed_strided"], _ = check_big(store.t()[:, ::2], [3, 2559])
+    report["layouts"] = layouts
+
+    # The lane where a 32-bit product first crosses 2**31, for col_pitch = 2560.
+    col_pitch = STORE_COLS
+    report["predicted_first_bad_lane"] = 2**31 // col_pitch + (
+        0 if 2**31 % col_pitch == 0 else 1
+    )
+    report["observed_first_bad_lane"] = first_bad
+
+    # Wrong values must be zeros (clamped) and confined to the tail.
+    clear_plans()
+    row = torch.tensor([1234], dtype=torch.int64, device="cuda")
+    transposed = store.t()
+    got = gather_rows(transposed, row)[0]
+    want = transposed[1234]
+    mismatch = (got != want)
+    report["n_wrong_in_row"] = int(mismatch.sum())
+    report["row_len"] = int(want.numel())
+    report["all_wrong_values_are_zero"] = bool((got[mismatch] == 0).all()) if int(
+        mismatch.sum()
+    ) else True
+    report["wrong_values_are_a_tail"] = (
+        bool(mismatch[-1]) and bool(~mismatch[0]) if int(mismatch.sum()) else True
+    )
+
+    # ---- the plan cache key ----------------------------------------------
+    def unpacked(pitch, seed):
+        gen = torch.Generator().manual_seed(seed)
+        return torch.randint(
+            -120, 120, (96, pitch), dtype=torch.int8, generator=gen
+        ).cuda()[:, :128]
+
+    p, q = unpacked(256, 901), unpacked(384, 902)
+    report["key_collides_for_two_unpacked_views"] = plan_key(
+        p, DEFAULT_CONFIG
+    ) == plan_key(q, DEFAULT_CONFIG)
+    report["key_separates_packed_from_unpacked"] = plan_key(
+        small, DEFAULT_CONFIG
+    ) != plan_key(p, DEFAULT_CONFIG)
+
+    def sequence_result(first, second):
+        clear_plans()
+        gather_rows(first, ids)
+        values = second.cpu().tolist()
+        want = [list(values[r]) for r in picks]
+        return "ok" if gather_rows(second, ids).cpu().tolist() == want else "wrong"
+
+    report["sequences"] = {
+        "unpacked_then_other_unpacked": sequence_result(p, q),
+        "other_unpacked_then_unpacked": sequence_result(q, p),
+        "packed_then_unpacked": sequence_result(small, q),
+        "same_table_twice": sequence_result(q, q),
+    }
+    # A stale plan must read real neighbouring data, not masked zeros.
+    clear_plans()
+    gather_rows(p, ids)
+    stale = gather_rows(q, ids)
+    truth = q[ids]
+    wrong = stale != truth
+    n_wrong = int(wrong.sum())
+    report["stale_wrong_values"] = n_wrong
+    report["stale_wrong_values_that_are_zero"] = (
+        int((stale[wrong] == 0).sum()) if n_wrong else 0
+    )
+
+    # ---- the context must still be alive --------------------------------
     torch.cuda.synchronize()
     canary = (torch.ones(1024, device="cuda") * 3).sum().item()
-    report["context_alive_after_gather"] = canary == 3072.0
+    report["context_alive"] = canary == 3072.0
     report["peak_gib"] = round(torch.cuda.max_memory_allocated() / 2**30, 3)
+    del store
+    torch.cuda.empty_cache()
     return report
-
-
-# ---------------------------------------------------------------------------
-# driver
-# ---------------------------------------------------------------------------
 
 
 def run_probe(source_dir: pathlib.Path, label: str) -> dict:
@@ -193,7 +228,6 @@ def run_probe(source_dir: pathlib.Path, label: str) -> dict:
 
 
 def patched_copy(workdir: pathlib.Path) -> pathlib.Path:
-    """Copy the library and apply the oracle patch out of solve.sh."""
     target = workdir / "fixed"
     shutil.copytree(ENVIRONMENT, target)
     body = SOLVE.read_text()
@@ -216,99 +250,130 @@ def main() -> int:
     problems: list[str] = []
     with tempfile.TemporaryDirectory() as tmp:
         workdir = pathlib.Path(tmp)
-        broken = run_probe(ENVIRONMENT, "as-shipped")
+        shipped = run_probe(ENVIRONMENT, "as-shipped")
         fixed = run_probe(patched_copy(workdir), "patched")
 
-    fatal = broken.get("fatal") or fixed.get("fatal")
+    fatal = shipped.get("fatal") or fixed.get("fatal")
     if fatal:
         print("=" * 74)
         print(f"FATAL: {fatal}")
         print("=" * 74)
-        print(f"  interpreter  {broken.get('interpreter', sys.executable)}")
-        print(f"  platform     {broken.get('platform', sys.platform)}")
+        print(f"  interpreter  {shipped.get('interpreter', sys.executable)}")
+        print(f"  platform     {shipped.get('platform', sys.platform)}")
         return 1
 
     print("=" * 74)
     print("environment")
     print("=" * 74)
     for key in ("torch", "triton", "device", "device_total_gib", "device_free_gib"):
-        print(f"  {key:<20} {broken.get(key)}")
-    print(f"  {'table size':<20} {broken.get('table_gib')} GiB")
-    print(f"  {'peak allocated':<20} {broken.get('peak_gib')} GiB")
+        print(f"  {key:<24} {shipped.get(key)}")
+    print(f"  {'shared allocation':<24} {shipped.get('store_gib')} GiB")
+    print(f"  {'peak allocated':<24} {shipped.get('peak_gib')} GiB")
 
     print()
     print("=" * 74)
-    print("1/2. int32 row base: does it wrap, and is the wrap silent?")
+    print("1. does the 32-bit lane product wrap, and where?")
     print("=" * 74)
-    boundary = broken["predicted_first_failing_row"]
-    print(f"  predicted first failing row      {boundary}")
-    print(f"  rows that came back wrong        {broken['mismatched_rows']}")
-    print(f"  ...of which entirely zero        {broken['mismatched_rows_that_are_all_zero']}")
-    print(f"  boundary window (row -> equal)   {broken['boundary_window']}")
-    print(f"  CUDA context alive afterwards    {broken['context_alive_after_gather']}")
-    print(f"  correct sibling kernel unaffected {broken['sibling_kernel_ok']}")
-
-    if not broken["mismatched_rows"]:
+    predicted = shipped["predicted_first_bad_lane"]
+    observed = shipped["observed_first_bad_lane"]
+    print(f"  predicted first wrong lane   {predicted}")
+    print(f"  observed first wrong lane    {observed}")
+    if observed != predicted:
         problems.append(
-            "the int32 row base did NOT wrap: no row came back wrong on the full "
-            "size table. Triton may have promoted the multiply; inspect the "
-            "generated TTIR before continuing."
+            f"first wrong lane is {observed}, predicted {predicted}. If it is None "
+            f"the product did not wrap at all: inspect the generated TTIR before "
+            f"continuing."
         )
-    if not broken["context_alive_after_gather"]:
-        problems.append(
-            "the CUDA context did not survive the gather, so the wrap is faulting "
-            "instead of being clamped. The bounds guard in the kernel is not doing "
-            "its job and the failure is not silent."
-        )
-    if broken["mismatched_rows"] and set(broken["mismatched_rows"]) != set(
-        broken["mismatched_rows_that_are_all_zero"]
-    ):
-        problems.append(
-            "some wrong rows were not all zero, so the wrapped offset is landing "
-            "inside the table rather than being clamped. Still silent, but "
-            "re-check that no read escapes the allocation."
-        )
-    expected_window = {
-        str(boundary - 2): True,
-        str(boundary - 1): True,
-        str(boundary): False,
-        str(boundary + 1): False,
-    }
-    if broken["boundary_window"] != expected_window:
-        problems.append(
-            f"boundary is not where predicted: expected {expected_window}, got "
-            f"{broken['boundary_window']}"
-        )
-    if not broken["sibling_kernel_ok"]:
-        problems.append("row_sums is wrong on the full size table; it must be correct")
 
     print()
     print("=" * 74)
-    print("3. pitch helper: which layouts are wrong as shipped?")
+    print("2. is the wrap silent, and confined to a tail?")
+    print("=" * 74)
+    print(f"  wrong values in one row      {shipped['n_wrong_in_row']} "
+          f"of {shipped['row_len']}")
+    print(f"  every wrong value is zero    {shipped['all_wrong_values_are_zero']}")
+    print(f"  wrong values form a tail     {shipped['wrong_values_are_a_tail']}")
+    print(f"  CUDA context alive after     {shipped['context_alive']}")
+    if not shipped["context_alive"]:
+        problems.append(
+            "the CUDA context did not survive, so the wrap is faulting instead of "
+            "being clamped; the failure is not silent"
+        )
+    if not shipped["all_wrong_values_are_zero"]:
+        problems.append(
+            "some wrong values are not zero, so a wrapped offset landed inside the "
+            "table; re-check that no read escapes the allocation"
+        )
+    if not shipped["wrong_values_are_a_tail"]:
+        problems.append("the corruption is not a tail slice of the row")
+    if not 0 < shipped["n_wrong_in_row"] < shipped["row_len"]:
+        problems.append(
+            f"expected part of the row wrong, got {shipped['n_wrong_in_row']} "
+            f"of {shipped['row_len']}"
+        )
+
+    print()
+    print("=" * 74)
+    print("3. which layouts are wrong as shipped?")
     print("=" * 74)
     for name, expected in EXPECTED_LAYOUTS.items():
-        actual = broken["layouts"].get(name)
+        actual = shipped["layouts"].get(name)
         flag = "OK " if actual == expected else "!! "
-        print(f"  {flag}{name:<16} expected {expected:<6} got {actual}")
+        print(f"  {flag}{name:<26} expected {expected:<6} got {actual}")
         if actual != expected:
             problems.append(f"layout {name}: expected {expected}, got {actual}")
 
     print()
     print("=" * 74)
-    print("4. patched library must be correct everywhere")
+    print("4. the plan cache key")
+    print("=" * 74)
+    print(f"  collides for two unpacked views  "
+          f"{shipped['key_collides_for_two_unpacked_views']}")
+    print(f"  separates packed from unpacked   "
+          f"{shipped['key_separates_packed_from_unpacked']}")
+    if not shipped["key_collides_for_two_unpacked_views"]:
+        problems.append("the key does not collide, so the cache defect cannot fire")
+    if not shipped["key_separates_packed_from_unpacked"]:
+        problems.append(
+            "the key fails to separate a packed table from a view, which would "
+            "break the pass_to_pass mislead"
+        )
+    expected_sequences = {
+        "unpacked_then_other_unpacked": "wrong",
+        "other_unpacked_then_unpacked": "wrong",
+        "packed_then_unpacked": "ok",
+        "same_table_twice": "ok",
+    }
+    for name, expected in expected_sequences.items():
+        actual = shipped["sequences"].get(name)
+        flag = "OK " if actual == expected else "!! "
+        print(f"  {flag}{name:<32} expected {expected:<6} got {actual}")
+        if actual != expected:
+            problems.append(f"sequence {name}: expected {expected}, got {actual}")
+    n_wrong = shipped["stale_wrong_values"]
+    n_zero = shipped["stale_wrong_values_that_are_zero"]
+    print(f"  stale plan -> {n_wrong} wrong values, {n_zero} of them zero")
+    if n_wrong and n_zero > n_wrong // 2:
+        problems.append(
+            "most wrong values from a stale plan are zeros, so the symptom points "
+            "at the mask rather than looking like misread data"
+        )
+
+    print()
+    print("=" * 74)
+    print("5. the patched library must be correct everywhere")
     print("=" * 74)
     bad_layouts = [n for n, v in fixed["layouts"].items() if v != "ok"]
-    print(f"  layouts still wrong after fix    {bad_layouts or 'none'}")
-    print(f"  rows still wrong after fix       {fixed['mismatched_rows'] or 'none'}")
-    print(f"  boundary window after fix        {fixed['boundary_window']}")
+    bad_sequences = [n for n, v in fixed["sequences"].items() if v != "ok"]
+    print(f"  layouts still wrong    {bad_layouts or 'none'}")
+    print(f"  sequences still wrong  {bad_sequences or 'none'}")
+    print(f"  wrong values in a row  {fixed['n_wrong_in_row']}")
     if bad_layouts:
         problems.append(f"patched library still wrong on layouts: {bad_layouts}")
-    if fixed["mismatched_rows"]:
-        problems.append(
-            f"patched library still wrong on rows: {fixed['mismatched_rows']}"
-        )
-    if not all(fixed["boundary_window"].values()):
-        problems.append("patched library still wrong at the boundary")
+    if bad_sequences:
+        problems.append(f"patched library still wrong on sequences: {bad_sequences}")
+    if fixed["n_wrong_in_row"]:
+        problems.append("patched library still corrupts part of a row")
 
     print()
     print("=" * 74)
@@ -317,9 +382,10 @@ def main() -> int:
         for item in problems:
             print(f"  - {item}")
         return 1
-    print("VERDICT: all expectations hold. Both defects are silent and independent.")
-    print("Next: harbor run -p . -a nop   (separate invocation)")
-    print("      harbor run -p . -a oracle")
+    print("VERDICT: all expectations hold. Both defects are silent, narrowly")
+    print("         triggered, and repaired by solve.sh.")
+    print("Next: python tools/verify_harness.py")
+    print("      python tools/verify_harness.py --independence")
     return 0
 
 

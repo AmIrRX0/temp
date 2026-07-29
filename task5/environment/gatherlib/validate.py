@@ -32,6 +32,21 @@ def check_table(table: torch.Tensor) -> None:
         raise ValueError("table must have positive strides on every axis")
 
 
+def require_packed_rows(table: torch.Tensor, op: str) -> None:
+    """Reject a table whose trailing axis is not packed.
+
+    Only :func:`gatherlib.gather_rows` walks an arbitrary layout. The in-place
+    and reducing kernels address a row as one contiguous run, which is what
+    lets them skip a per-element pitch multiply, so they need the trailing axis
+    packed and say so rather than reading the wrong memory.
+    """
+    if int(table.stride(-1)) != 1:
+        raise ValueError(
+            f"{op} needs a table whose trailing axis is packed; "
+            f"got strides {tuple(int(s) for s in table.stride())}"
+        )
+
+
 def check_values(table: torch.Tensor, values: torch.Tensor, n_rows: int) -> None:
     """Reject a value block that does not line up with the table it writes to."""
     if values.dim() != 2:
