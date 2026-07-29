@@ -175,7 +175,7 @@ def run_probe(source_dir: pathlib.Path, label: str) -> dict:
         text=True,
     )
     sys.stderr.write(out.stderr)
-    match = re.search(r"^REPORT (\{.*\})$", out.stdout, re.M)
+    match = re.search(r"^REPORT (\{.*\})\s*$", out.stdout, re.M)
     if not match:
         print(f"--- {label} probe produced no report ---")
         print(out.stdout[-4000:])
