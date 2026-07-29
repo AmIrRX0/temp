@@ -89,8 +89,17 @@ def probe(source_dir: str) -> dict:
     os.environ.setdefault("TRITON_DEBUG", "0")
     sys.path.insert(0, source_dir)
 
-    import torch
-    import triton
+    try:
+        import torch
+        import triton
+    except ImportError as exc:
+        return {
+            "fatal": f"{exc}. This probe needs torch and Triton on a CUDA device. "
+            f"Triton has no official Windows support, so run this inside the "
+            f"task's own image instead -- see tools/verify_in_docker.ps1.",
+            "interpreter": sys.executable,
+            "platform": sys.platform,
+        }
 
     report: dict = {
         "torch": torch.__version__,
@@ -210,6 +219,15 @@ def main() -> int:
         broken = run_probe(ENVIRONMENT, "as-shipped")
         fixed = run_probe(patched_copy(workdir), "patched")
 
+    fatal = broken.get("fatal") or fixed.get("fatal")
+    if fatal:
+        print("=" * 74)
+        print(f"FATAL: {fatal}")
+        print("=" * 74)
+        print(f"  interpreter  {broken.get('interpreter', sys.executable)}")
+        print(f"  platform     {broken.get('platform', sys.platform)}")
+        return 1
+
     print("=" * 74)
     print("environment")
     print("=" * 74)
@@ -217,10 +235,6 @@ def main() -> int:
         print(f"  {key:<20} {broken.get(key)}")
     print(f"  {'table size':<20} {broken.get('table_gib')} GiB")
     print(f"  {'peak allocated':<20} {broken.get('peak_gib')} GiB")
-
-    if broken.get("fatal") or fixed.get("fatal"):
-        print(f"\nFATAL: {broken.get('fatal') or fixed.get('fatal')}")
-        return 1
 
     print()
     print("=" * 74)

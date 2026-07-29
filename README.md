@@ -68,6 +68,16 @@ Verified in this container (no GPU here):
 
 ## Run order on the GPU box
 
+Triton has no official Windows support, so on a Windows host do **not** try to
+install it natively — run the probe inside the task's own image, which is the
+environment the task is graded in anyway:
+
+```powershell
+.\tools\verify_in_docker.ps1
+```
+
+On Linux, or in any environment that already has torch + Triton + CUDA:
+
 ```bash
 python tools/verify_first.py        # must print "VERDICT: all expectations hold"
 ```
