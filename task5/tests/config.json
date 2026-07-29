@@ -1,0 +1,27 @@
+{
+  "fail_to_pass": [
+    "test_gather_matches_direct_indexing_on_a_full_size_table",
+    "test_gather_matches_index_select_on_a_full_size_table",
+    "test_gather_matches_per_row_reference_on_a_full_size_table",
+    "test_gather_of_one_row_matches_that_row_on_a_full_size_table",
+    "test_gather_matches_reference_for_a_row_step_sliced_table",
+    "test_gather_matches_reference_for_a_column_narrowed_table",
+    "test_gather_matches_reference_for_a_column_windowed_table",
+    "test_gather_agrees_across_tables_holding_the_same_values"
+  ],
+  "pass_to_pass": [
+    "test_gather_matches_reference_for_a_contiguous_table",
+    "test_gather_matches_reference_for_a_transposed_table",
+    "test_gather_matches_reference_for_a_column_step_sliced_table",
+    "test_gather_matches_reference_for_a_row_offset_table",
+    "test_gather_output_has_expected_shape_dtype_and_device",
+    "test_gather_accepts_int32_and_int64_row_ids",
+    "test_gather_is_invariant_to_block_size",
+    "test_gather_runs_a_triton_kernel",
+    "test_row_sums_match_reference_on_a_full_size_table",
+    "test_row_sums_match_reference_for_a_column_narrowed_table",
+    "test_scatter_writes_expected_rows_of_a_column_narrowed_table",
+    "test_out_of_range_row_id_is_rejected",
+    "test_registry_exposes_every_operation"
+  ]
+}

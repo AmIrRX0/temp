@@ -1,0 +1,67 @@
+version = "1.0"
+
+[metadata]
+category = "Kernel Structural Correctness"
+secondary_categories = ["Tensor / Memory Layout"]
+tags = ["pytorch", "triton", "gpu-kernels", "addressing", "strides", "int64-indexing"]
+difficulty = "hard"
+difficulty_explanation = """
+Two silent and independent defects sit in two different files and neither of
+them can be diagnosed by reading the file it lives in. The gather kernel's
+address arithmetic is correct as written if integers are as wide as a reader
+assumes they are, and the width does not come from anywhere in the repository:
+it comes from Triton's own type rules, where tl.arange is int32 and a Python
+int argument is specialised as i32 whenever it fits. The kernel visibly widens
+to 64 bit, just on the column term and the output offset instead of on the row
+base, so the surface signal says the concern was handled. The kernel also
+clamps every offset against the span of the table, which is the reason the
+wrapped offset returns zeros rather than raising an illegal memory access, and
+the same clamp appears in both correct sibling kernels so it does not mark the
+broken one. The second defect derives a row pitch from the table's shape rather
+than its stride, and it is correct for a fully contiguous table and also for a
+transposed or column strided one, so the obvious hypothesis that views are
+broken is wrong and the pass_to_pass set rewards it. Nothing raises, nothing
+warns, and every shape and dtype is right throughout.
+"""
+solution_explanation = """
+The first fix is to widen the row id before it is multiplied by the row pitch,
+so the row base is computed in 64 bit rather than wrapping in 32 bit. The
+second fix is to make the packed layout fast path take its row pitch from
+stride(-2) instead of from shape[-1], which is what the general branch of the
+same function already does. Neither fix changes any signature and neither one
+touches the two correct sibling kernels.
+"""
+verification_explanation = """
+For fail_to_pass: gathering from a table that spans more than 2^31 elements,
+checked three separate ways against torch's own advanced indexing, against
+torch.index_select, and against a loop that fetches each row on its own, plus
+the single row case; and gathering from a row step sliced table, a column
+narrowed table and a column windowed table, each against a gather done in
+plain Python over tensor.cpu().tolist(); plus an equality check between a view
+and a packed copy of the same data.
+For pass_to_pass: a contiguous table, a transposed table, a column step sliced
+table and a row offset table all gather correctly already; the output's shape,
+dtype, device and contiguity contract; both index dtypes accepted; the
+block_size knob changing no value; both sibling kernels, including the row sum
+kernel on the same full size table; an out of range row id still raising; and
+the registry still exposing three names.
+No comparison is made against this package's own output, so editing the library
+cannot make a wrong answer look right. One pass_to_pass test swaps the compiled
+kernel for a tripwire and asserts the gather still launches it, so replacing
+the kernel with torch indexing cannot pass the suite either.
+The full size fixture allocates 2.003 GiB on the device and the suite needs
+roughly 2.5 GiB of free device memory in total.
+"""
+expert_time_estimate_hours = 5.0
+
+[verifier]
+timeout_sec = 1800
+
+[agent]
+timeout_sec = 1800
+
+[environment]
+build_timeout_sec = 1800
+cpus = 4
+memory_mb = 16384
+storage_mb = 16384
