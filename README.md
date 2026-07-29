@@ -129,12 +129,15 @@ Also found by running Harbor:
 - `oracle` -> reward **1**, all 21 `PASSED`.
 - Both reward paths written (`reward.txt` and `rewards/reward.txt`).
 
-Still outstanding:
+**Confirmed by `tools/verify_harness.py --independence`**, also through the real
+verifier: repairing defect A alone leaves B's four tests failing, repairing B
+alone leaves A's four failing, and every `pass_to_pass` test passes in both --
+21/21 expected outcomes in each direction. The two defects are independent
+(S9 item 4).
 
-- `python tools/verify_harness.py --independence` -- repairs one defect at a
-  time and confirms the other still fails its own tests (S9 item 4). Verified by
-  CPU simulation already; this confirms it through the verifier.
-- Optionally a real `harbor run` on a GPU-capable `--env` backend.
+Nothing is outstanding on the verification side. A real `harbor run` is still
+only possible on a GPU-capable `--env` backend, which needs a cloud account; the
+harness check above covers the same ground.
 
 ## Run order on the GPU box
 
