@@ -1,0 +1,8 @@
+# Shell scripts run inside the Linux container: never let a Windows checkout
+# rewrite them to CRLF, bash fails on the carriage returns.
+*.sh text eol=lf
+Dockerfile text eol=lf
+*.py text eol=lf
+*.json text eol=lf
+*.toml text eol=lf
+*.md text eol=lf
