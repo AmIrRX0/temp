@@ -94,9 +94,27 @@ Also found by running Harbor:
   carries an `override_gpus` field alongside `override_cpus`,
   `override_memory_mb` and `override_storage_mb`.
 
+- **Harbor's local `docker` environment cannot run a GPU task at all.**
+  `DockerEnvironment.capabilities` (`environments/docker/docker.py:291`) never
+  sets `gpus`, so it defaults to False and `_validate_gpu_support` raises before
+  a container is ever created. It is a hard no, not a flag. `harbor run --env`
+  offers GPU-capable backends (modal, novita, beam, blaxmith, ...) but they all
+  need a cloud account.
+
+  `tools/verify_harness.py` closes that gap without one: it runs the task's real
+  verifier -- the same `test.sh`, `run_script.sh`, `parser.py` and `config.json`
+  -- under plain `docker run --gpus all`, once as shipped and once with
+  `solve.sh` applied, and checks the two outcomes Harbor would check.
+
+  The failed CPU-only Harbor run did still validate the plumbing end to end: the
+  image builds, `test.sh` runs, `parser.py` reported all 21 test names correctly
+  into `report.json` (so `config.json` matches what pytest prints), both reward
+  paths were written, and the oracle agent log shows `solution applied`.
+
 Still outstanding:
 
-- `harbor run -a nop` / `-a oracle` on a GPU-enabled container.
+- `python tools/verify_harness.py` -- the pass/fail outcomes on a GPU.
+- Optionally a real `harbor run` on a GPU-capable `--env` backend.
 
 ## Run order on the GPU box
 
