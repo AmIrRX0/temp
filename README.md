@@ -35,8 +35,14 @@ tools/
 
 | | File | Defect | Trigger | Symptom |
 |---|---|---|---|---|
-| **A** | `kernels/gather.py` | `src_off = src_row.to(tl.int64) * row_pitch + lane * col_pitch` — the row term is widened and correct; `lane` comes from `tl.arange` and stays i32 | Needs a table **both** large **and** addressed down a column, so that `lane * col_pitch` crosses 2³¹. Large contiguous is fine (`col_pitch == 1`); small transposed is fine (pitch tiny) | The last **0.136%** of every row zeroed |
-| **B** | `cache.py` | Plan cache keyed on `shape, dtype, device, is_contiguous(), config` — contiguity *looks* layout-aware and does separate a packed table from a view | Needs **two unpacked views of the same shape** with different pitches, gathered in sequence | Values read from real neighbouring rows, no masking |
+| **A** | `kernels/gather.py` | Offset built from two halves, `row_base = src_row.to(tl.int64) * row_pitch` and `in_row = (lane * col_pitch).to(tl.int64)` — both are i64 when they meet, and a comment says so. The cast on the second lands **one step too late**: `lane` is i32 from `tl.arange`, `col_pitch` is an i32 arg, so the product already wrapped | Needs a table **both** large **and** addressed down a column. Large contiguous is fine (`col_pitch == 1`); small transposed is fine (pitch tiny) | The last **0.136%** of every row zeroed |
+| **B** | `cache.py` | Plan cache keyed on `shape, dtype, device, is_contiguous(), stride(-1), config` — a stride **is** in the key, so "it ignores layout" is false. It misses the *leading* pitch | Needs **two unpacked views of the same shape** that agree on the trailing pitch and differ on the leading one, gathered in sequence | Values read from real neighbouring rows, no masking |
+
+**Both defects are reflex-proof.** For A, an agent applying the standard Triton
+rule ("cast offset arithmetic to int64") finds a cast on every term already and
+changes nothing; the fix is moving one cast inside a parenthesis. For B, grepping
+`cache.py` for `stride` returns a hit and looks reassuring; the fix needs
+noticing it is the *wrong* stride.
 
 Nothing in the package multiplies a lane index by a column pitch anywhere else:
 `row_sums` and `scatter_rows_` declare a packed-trailing-axis requirement

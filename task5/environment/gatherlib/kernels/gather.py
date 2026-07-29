@@ -28,7 +28,12 @@ def _gather_rows_kernel(
     lane = pid_col * BLOCK + tl.arange(0, BLOCK)
     active = lane < row_len
 
-    src_off = src_row.to(tl.int64) * row_pitch + lane * col_pitch
+    # Both halves of the address are widened before they meet, so a table that
+    # spans more than a 32-bit offset range is still addressed correctly.
+    row_base = src_row.to(tl.int64) * row_pitch
+    in_row = (lane * col_pitch).to(tl.int64)
+    src_off = row_base + in_row
+
     inside = (src_off >= 0) & (src_off < table_span)
     vals = tl.load(table_ptr + src_off, mask=active & inside, other=0)
 

@@ -19,15 +19,17 @@ def plan_key(table: torch.Tensor, config: GatherConfig) -> Tuple:
     """Cache identity for the plan belonging to ``table`` under ``config``.
 
     Geometry and config are the inputs to :func:`gatherlib.plan.build_plan`, so
-    they both belong in the key. Whether the table is packed is in there too: a
-    freshly allocated table and a view of a larger one are addressed
-    differently even when they agree on shape.
+    they both belong in the key. Layout is in there twice over: whether the
+    table is packed, since a freshly allocated table and a view of a larger one
+    are addressed differently even when they agree on shape, and the pitch of
+    the trailing axis, which is what a transpose or a column slice changes.
     """
     return (
         tuple(int(s) for s in table.shape),
         table.dtype,
         table.device,
         table.is_contiguous(),
+        int(table.stride(-1)),
         config,
     )
 

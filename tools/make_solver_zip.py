@@ -43,7 +43,7 @@ EXEC_SUFFIXES = {".sh"}
 # Fragments that only appear in a repaired library. If any of these reach the
 # archive, the package is giving the fix away.
 FIX_FRAGMENTS = (
-    b"lane.to(tl.int64) * col_pitch",
+    b"in_row = lane.to(tl.int64) * col_pitch",
     b"tuple(int(s) for s in table.stride()),",
 )
 

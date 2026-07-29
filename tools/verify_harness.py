@@ -76,12 +76,12 @@ def stage_tests(workdir: pathlib.Path) -> pathlib.Path:
 PARTIAL_FIXES = {
     "A": (
         "kernels/gather.py",
-        "    src_off = src_row.to(tl.int64) * row_pitch + lane * col_pitch\n",
-        "    src_off = src_row.to(tl.int64) * row_pitch + lane.to(tl.int64) * col_pitch\n",
+        "    in_row = (lane * col_pitch).to(tl.int64)\n",
+        "    in_row = lane.to(tl.int64) * col_pitch\n",
     ),
     "B": (
         "cache.py",
-        "        table.is_contiguous(),\n",
+        "        int(table.stride(-1)),\n",
         "        tuple(int(s) for s in table.stride()),\n",
     ),
 }

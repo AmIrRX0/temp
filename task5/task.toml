@@ -9,10 +9,15 @@ difficulty_explanation = """
 Two silent independent defects sit in two different files, and neither can be
 diagnosed by reading the file it lives in.
 
-The kernel widens the row term of its offset to 64 bit and leaves the lane term
-at 32 bit. Since lane comes from tl.arange, which Triton types as int32, the
-product with the column pitch wraps, but only when the column pitch is large,
-and the column pitch is only large when the table is addressed down a column.
+The kernel builds its offset out of two halves and casts both to 64 bit before
+adding them, with a comment saying as much, so wide addressing looks handled.
+The cast on the second half lands one step too late: lane comes from tl.arange,
+which Triton types as int32, and the column pitch is an int32 argument, so the
+product has already wrapped before it is widened. This defeats the reflex
+repair, because an agent that blanket-casts offset arithmetic to int64 finds a
+cast on every term already and changes nothing. The product wraps only when the
+column pitch is large, and the column pitch is only large when the table is
+addressed down a column rather than along a row.
 So the trigger is a conjunction: big enough that a pitch times an index crosses
 2^31, and laid out so that the big pitch is the one multiplied by the lane. A
 large contiguous table is fine, a small transposed table is fine, and a large
@@ -23,14 +28,16 @@ kernels declare that they need a packed trailing axis and walk a row with a
 plain add, which is a real, validated restriction rather than a contrivance.
 
 The second defect is a memoised access plan whose key is shape, dtype, device,
-contiguity and config. Contiguity makes the key look layout-aware and does
-separate a packed table from a view. It does not separate two unpacked views of
-each other's shape, which agree on every element of the key and disagree on row
-pitch, so the second table gathered is served the first one's pitches. The key
-looks entirely reasonable in isolation; seeing the hole means reading a
-different file to find out what the plan is actually derived from, and then
-constructing a sequence of calls to observe it, because every layout involved is
-correct when gathered on its own.
+contiguity, the trailing axis pitch, and config. A stride is genuinely in that
+key, so "the key ignores layout" is a false reading: it separates a packed table
+from a view, and a transpose or column slice from either. What it misses is two
+unpacked views of each other's shape whose trailing axis is packed in both, which
+agree on every element of the key and differ on the leading pitch, so the second
+table gathered is served the first one's pitches. Grepping for stride in that
+file finds a hit and looks reassuring; seeing the hole means noticing it is the
+wrong stride, reading a different file to find what the plan is derived from, and
+then constructing a sequence of calls to observe it, because every layout
+involved is correct when gathered on its own.
 
 Nothing raises, nothing warns, and every shape and dtype is right throughout.
 The pass_to_pass set rewards the wrong hypotheses: size alone is fine, layout
@@ -40,10 +47,11 @@ repair is available too, since row ids are narrowed to int32 in a third file,
 which looks like the cause of an overflow but is not.
 """
 solution_explanation = """
-The first fix is to widen the lane index before it is multiplied by the column
-pitch, so the offset within a row is computed in 64 bit rather than wrapping in
-32 bit. The second is to key the plan cache on the table's strides instead of on
-whether it is contiguous, which is what the plan is actually derived from.
+The first fix moves one cast inside a parenthesis, widening the lane index before
+it is multiplied by the column pitch rather than after, so the offset within a
+row is computed in 64 bit instead of wrapping and then being sign extended. The
+second replaces the trailing axis pitch in the plan cache key with the full
+stride tuple, which is what the plan is actually derived from.
 Neither fix changes a signature and neither touches the two sibling kernels.
 """
 verification_explanation = """
@@ -74,7 +82,7 @@ One allocation of 840000 by 2560 int8 (2.003 GiB) backs every full size case and
 its transpose is the second layout over the same bytes; the suite needs roughly
 2.5 GiB of free device memory.
 """
-expert_time_estimate_hours = 6.5
+expert_time_estimate_hours = 7.5
 
 [verifier]
 timeout_sec = 2400
