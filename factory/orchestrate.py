@@ -40,6 +40,16 @@ REPO = pathlib.Path(__file__).resolve().parent.parent
 FACTORY = REPO / "factory"
 
 
+LESSONS = FACTORY / "LESSONS.md"
+
+
+def remember(entry: str) -> None:
+    """Append a lesson so the next build starts where this one ended."""
+    stamp = datetime.date.today()
+    with LESSONS.open("a", encoding="utf-8") as handle:
+        handle.write(f"\n### {stamp}\n\n{entry.strip()}\n")
+
+
 def log(message: str) -> None:
     stamp = datetime.datetime.now().strftime("%H:%M:%S")
     print(f"[{stamp}] {message}", flush=True)
@@ -151,8 +161,10 @@ each, with reasons.
 Also read the library for anything that names the mechanism in a comment,
 docstring or identifier.
 
-Answer in three parts: VERDICT (pass or change-needed), the specific lines that
-concern you, and what you would change. Do not edit anything.
+Answer in four parts: VERDICT (pass or change-needed), the specific lines that
+concern you, what you would change, and LESSON -- one short paragraph a future
+task author should carry forward, written as a rule rather than a story. Do not
+edit anything.
 """
 
 
@@ -322,6 +334,9 @@ def main() -> int:
                 (runs / f"round{round_no}-review.md").write_text(review,
                                                                 encoding="utf-8")
                 print(review[:4000])
+                remember(f"**{args.task}: passed.** {len(attempts)} independent "
+                         f"solver attempts, all scored 0. Reviewer notes:\n\n> "
+                         + review[:1200].replace("\n", "\n> "))
                 if "change-needed" in review.lower():
                     feedback = ("An independent reviewer found problems the gate "
                                 "cannot catch. Address every one:\n\n" + review[:6000])
@@ -336,6 +351,13 @@ def main() -> int:
             continue
 
         winner = next(a for a in attempts if a["reward"] != "0")
+        remember(
+            f"**{args.task}, round {round_no}: a solver repaired it.** Model "
+            f"{winner['model']}, attempt {len(attempts)} of the sweep. Its own "
+            f"account of how:\n\n> "
+            + winner["summary"][:1200].replace("\n", "\n> ")
+            + "\n\nWhatever made that possible is a shortcut to close in every "
+              "future task, not just this one.")
         log(f"attempt {len(attempts)} ({winner['model']}) scored "
             f"{winner['reward']}. Feeding its reasoning back.")
         feedback = (

@@ -5,6 +5,8 @@ passes after it. It is accepted only if a frontier coding agent cannot repair it
 Read these first, in full, before writing anything:
 
 - `factory/STANDARDS.md` — the acceptance standards. They are binding.
+- `factory/LESSONS.md` — what previous rounds cost. Also binding: every entry
+  there is a mistake already paid for once.
 - `task_ideas.md` — the idea pool. I will tell you which idea number to build.
 - `task5/` — a finished, verified task. Use it as the shape to copy: file
   layout, harness, `parser.py`, `test.sh` with both reward paths, `solve.sh`
