@@ -326,6 +326,53 @@ def check_no_exemplar(task: pathlib.Path, fixed: pathlib.Path | None) -> None:
         ok("no-exemplar", f"{len(added)} patched line(s), nothing like them elsewhere")
 
 
+def check_isolation(task: pathlib.Path) -> None:
+    """Nothing outside this task and the factory may be modified.
+
+    Every idea gets its own directory. Editing a finished task in place is how a
+    verified submission silently stops being verified.
+    """
+    out = subprocess.run(["git", "status", "--porcelain"],
+                         cwd=task.parent, capture_output=True, text=True)
+    if out.returncode != 0:
+        warn("isolation", "not a git repo; cannot check")
+        return
+    allowed = (task.name + "/", "factory/")
+    stray = []
+    for line in out.stdout.splitlines():
+        path = line[3:].strip().strip('"')
+        if path and not path.startswith(allowed):
+            stray.append(path)
+    if stray:
+        for path in sorted(set(stray))[:10]:
+            fail("isolation", f"modified outside the task: {path}")
+    else:
+        ok("isolation", "no changes outside this task or factory/")
+
+
+def check_adversarial(task: pathlib.Path) -> None:
+    """A task nobody tried to break is not known to be hard."""
+    record = task.parent / "factory" / "records" / f"{task.name}-adversarial.md"
+    if not record.exists():
+        fail("adversarial", f"no record at {record.relative_to(task.parent)}")
+        fail("adversarial",
+             "hand factory/make_solver_zip.py output to a solver in a SEPARATE "
+             "session, grade its patch yourself, and write the result down")
+        return
+    text = record.read_text(encoding="utf-8")
+    match = re.search(r"^reward:\s*(\S+)", text, re.M)
+    if not match:
+        fail("adversarial", "record has no 'reward:' line")
+    elif match.group(1) == "REPLACE_ME":
+        fail("adversarial", "record is still a stub")
+    elif match.group(1) != "0":
+        fail("adversarial",
+             f"a solver scored {match.group(1)}; the task did not defeat it. "
+             f"Read its reasoning, close the shortcut, rebuild.")
+    else:
+        ok("adversarial", "a solver attempt scored 0")
+
+
 def check_archive(task: pathlib.Path) -> None:
     tmp = pathlib.Path(tempfile.mkdtemp()) / "task.zip"
     text_suffixes = {".sh", ".py", ".json", ".toml", ".md"}
@@ -465,12 +512,15 @@ def main() -> int:
     check_leakage(task)
     fixed = check_solve(task)
     check_no_exemplar(task, fixed)
+    check_isolation(task)
     check_archive(task)
 
     if not args.static_only:
         gpus = bool(config.get("environment", {}).get("gpus"))
         header(f"dynamic checks  (docker{', gpu' if gpus else ''})")
         check_dynamic(task, config, f2p, p2p, gpus)
+        header("difficulty evidence")
+        check_adversarial(task)
 
     header("verdict")
     print(f"  {len(FAILURES)} failure(s), {len(WARNINGS)} warning(s)")
