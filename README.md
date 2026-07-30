@@ -176,6 +176,23 @@ Do **not** hand a solver the submission archive: `solution/solve.sh`,
 python tools\make_solver_zip.py        # instruction.md + environment/ only
 ```
 
+The solver does **not** need a GPU of its own. What decides the experiment is
+whether its final patch passes the real suite, and you can score that yourself:
+
+```powershell
+python tools\verify_harness.py --grade C:\path\to\solver_test\environment
+```
+
+That runs the actual `test.sh` against the solver's patched library on your GPU
+and prints the reward Harbor would give, plus exactly which `fail_to_pass` tests
+are still failing. A sandboxed solver with no CUDA can still reason its way to
+both fixes from the source; if it cannot, `--grade` says so with reward 0.
+
+Note the asymmetry: a CPU-only solver failing is **not** proof the task is hard,
+only that the source does not give the defects away by reading. A real Harbor
+agent has a device and can probe. A GPU-backed solver run is still the
+conclusive test.
+
 `tests/` is excluded on purpose. Harbor never shows the agent the suite, and
 this task's fail_to_pass names describe both triggers — one says "an earlier
 gather from a wider table", the other says "a transposed full size table". A

@@ -187,6 +187,45 @@ def check(label: str, reward: str, report: dict, want_reward: str,
     return problems
 
 
+def grade(source: pathlib.Path, workdir: pathlib.Path, tests: pathlib.Path,
+          f2p: list[str], p2p: list[str]) -> int:
+    """Score an outside attempt the way Harbor would."""
+    package = source if source.name == "gatherlib" else source / "gatherlib"
+    if not (package / "__init__.py").exists():
+        raise SystemExit(f"no gatherlib package found at {source}")
+
+    staged = workdir / "graded"
+    staged.mkdir(parents=True)
+    shutil.copytree(package, staged / "gatherlib")
+    for path in (staged / "gatherlib").rglob("*.py"):
+        path.write_bytes(path.read_bytes().replace(b"\r\n", b"\n"))
+
+    print(f"grading {package}")
+    reward, report = run_verifier(staged / "gatherlib", tests, workdir / "logs_graded")
+
+    still_failing = [n for n in f2p if report.get(n) != "PASSED"]
+    regressed = [n for n in p2p if report.get(n) != "PASSED"]
+
+    print()
+    print("=" * 74)
+    print(f"reward Harbor would give: {reward}")
+    print("=" * 74)
+    print(f"  fail_to_pass fixed     {len(f2p) - len(still_failing)}/{len(f2p)}")
+    print(f"  pass_to_pass intact    {len(p2p) - len(regressed)}/{len(p2p)}")
+    for name in still_failing:
+        print(f"  !! still failing   {name} -> {report.get(name)}")
+    for name in regressed:
+        print(f"  !! regressed       {name} -> {report.get(name)}")
+    print()
+    if reward == "1":
+        print("VERDICT: this attempt would score 1. The task did not defeat it.")
+        return 1
+    print("VERDICT: this attempt would score 0. The task defeated it.")
+    if still_failing:
+        print("         The defect behind those tests was never found.")
+    return 0
+
+
 # Which fail_to_pass tests each defect is responsible for. Used only by the
 # independence check.
 OWNED_BY = {
@@ -213,6 +252,15 @@ def main() -> int:
         help="instead of nop/oracle, repair one defect at a time and confirm the "
              "other one still fails its own tests (S9 item 4)",
     )
+    parser.add_argument(
+        "--grade",
+        metavar="DIR",
+        help="grade somebody else's attempt: DIR is a gatherlib package, or a "
+             "directory containing one. Runs the real suite against it and "
+             "reports the reward Harbor would give, plus which fail_to_pass "
+             "tests are still failing. Use this to score a solver agent's patch "
+             "without the solver needing a GPU of its own.",
+    )
     args = parser.parse_args()
 
     config = json.loads(CONFIG.read_text())
@@ -231,6 +279,9 @@ def main() -> int:
         workdir = pathlib.Path(tmp)
         tests = stage_tests(workdir)
         all_pass = {n: "PASSED" for n in f2p + p2p}
+
+        if args.grade:
+            return grade(pathlib.Path(args.grade), workdir, tests, f2p, p2p)
 
         if args.independence:
             for part, other in (("A", "B"), ("B", "A")):
