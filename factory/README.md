@@ -13,10 +13,34 @@ factory/
 
 ```powershell
 python factory\preflight.py                        # before anything
+python factory\new_task.py --task task6 --idea 1 --name mylib
 python factory\gate.py --task task6 --static-only
 python factory\gate.py --task task6
 python factory\make_solver_zip.py --task task6     # for the adversarial session
+python factory\grade.py --task task6 --patch <dir> # score a solver's patch
 ```
+
+## Running the whole loop unattended
+
+```powershell
+python factory\orchestrate.py --check-cli
+python factory\orchestrate.py --task task6 --idea 1 --name mylib --rounds 3
+```
+
+Two headless Claude Code sessions per round: a builder in the repo, and a solver
+in a clean extract of the answer-free package, so it cannot reach `solve.sh`. The
+solver's patch is graded against the real suite; reward 0 ends the loop, reward 1
+feeds its own account of the shortcut back to the builder and the next round
+starts. Every transcript lands in `factory/runs/<task>/`.
+
+It stops and hands back for three things it must not do: writing `instruction.md`
+and `task_reasoning.md` as final copy (project rules treat model-written copy as
+grounds for removal), judging whether a sibling file gives the answer away, and
+submitting.
+
+The builder edits files without asking. `--permission-mode acceptEdits` is the
+default; `bypassPermissions` also lets it run arbitrary commands. Decide which
+before leaving it unattended.
 
 ## Before the first run
 
