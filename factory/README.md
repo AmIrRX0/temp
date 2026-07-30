@@ -27,11 +27,17 @@ python factory\orchestrate.py --check-cli
 python factory\orchestrate.py --task task6 --idea 1 --name mylib --rounds 3
 ```
 
-Two headless Claude Code sessions per round: a builder in the repo, and a solver
-in a clean extract of the answer-free package, so it cannot reach `solve.sh`. The
-solver's patch is graded against the real suite; reward 0 ends the loop, reward 1
-feeds its own account of the shortcut back to the builder and the next round
-starts. Every transcript lands in `factory/runs/<task>/`.
+A builder session in the repo, then a **sweep of independent solver sessions**,
+each in its own fresh extract of the answer-free package so no solver can see
+another's patch and none can reach `solve.sh`. Every patch is graded against the
+real suite. The task passes only if **all** of them score 0; the first one that
+scores 1 stops the sweep and its own account of the shortcut goes back to the
+builder for the next round. Every transcript lands in `factory/runs/<task>/`.
+
+The default sweep is `--solver-model sonnet,sonnet,sonnet,opus,opus`: three
+samples of the cheaper model, then two of the stronger one, because one agent
+failing can be luck and the last thing you want is to discover on the reviewer's
+machine that a better model walks straight through it.
 
 When the gate goes green a third session reviews the task with no stake in it
 passing: it judges whether any sibling file hands over the fix, and whether
@@ -89,7 +95,7 @@ Exit code 0 only when every check passes. What it decides:
 | solve.sh | not applying, or applying twice |
 | no-exemplar | a patched line appearing verbatim in another file |
 | isolation | a **sibling** task directory being modified (shared tooling is fine) |
-| adversarial | no `factory/records/<task>-adversarial.md`, or a reward other than 0 |
+| adversarial | no record, a reward other than 0, or fewer than 3 independent solver attempts |
 | archive | backslash entries, a wrapper folder, missing root `instruction.md` |
 | nop | reward != 0, or anything ERRORing, or the wrong set failing |
 | oracle | reward != 1 |

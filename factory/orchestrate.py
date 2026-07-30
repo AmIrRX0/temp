@@ -156,13 +156,14 @@ concern you, and what you would change. Do not edit anything.
 """
 
 
-def make_solver_dir(task: str, workdir: pathlib.Path) -> pathlib.Path:
+def make_solver_dir(task: str, workdir: pathlib.Path, label: str) -> pathlib.Path:
+    """A fresh extraction per attempt: one solver's patch must never reach another."""
     archive = REPO / f"{task}_for_solver.zip"
     out = run([sys.executable, str(FACTORY / "make_solver_zip.py"),
                "--task", task, "-o", str(archive)])
     if out.returncode != 0:
         raise SystemExit(f"packaging failed:\n{out.stdout}{out.stderr}")
-    target = workdir / "solver"
+    target = workdir / label
     if target.exists():
         shutil.rmtree(target)
     target.mkdir(parents=True)
@@ -186,7 +187,9 @@ def main() -> int:
     parser.add_argument("--gpu", action="store_true")
     parser.add_argument("--rounds", type=int, default=3)
     parser.add_argument("--builder-model", default="opus")
-    parser.add_argument("--solver-model", default="sonnet")
+    parser.add_argument("--solver-model", default="sonnet,sonnet,sonnet,opus,opus",
+                        help="comma-separated model per independent solver "
+                             "attempt; every one must score 0")
     parser.add_argument("--permission-mode", default="acceptEdits",
                         choices=["acceptEdits", "bypassPermissions"])
     parser.add_argument("--timeout", type=int, default=5400,
@@ -265,38 +268,46 @@ def main() -> int:
                         "record. Fix these:\n\n" + "\n".join(blocking))
             continue
 
-        log("packaging for the solver")
-        solver_dir = make_solver_dir(args.task, runs)
+        models = [m.strip() for m in args.solver_model.split(",") if m.strip()]
+        log(f"adversarial: {len(models)} independent solver sessions")
+        attempts = []
+        for index, model in enumerate(models, 1):
+            label = f"r{round_no}-solver{index}"
+            log(f"  attempt {index}/{len(models)} ({model})")
+            solver_dir = make_solver_dir(args.task, runs, label)
+            reply = claude(SOLVER_PROMPT, solver_dir, model,
+                           args.permission_mode, args.timeout,
+                           runs / f"{label}.txt")
+            result_file = runs / f"{label}-grade.json"
+            graded = run([sys.executable, str(FACTORY / "grade.py"),
+                          "--task", args.task,
+                          "--patch", str(solver_dir / "environment"),
+                          "--json", str(result_file)])
+            got = "?"
+            if result_file.exists():
+                got = json.loads(result_file.read_text()).get("reward", "?")
+            log(f"  attempt {index} scored {got}")
+            attempts.append({"model": model, "reward": got,
+                             "summary": reply, "graded": graded.stdout[-1200:]})
+            if got != "0":
+                log("  a solver repaired it; stopping the sweep early")
+                break
 
-        log("solver session")
-        solver_reply = claude(SOLVER_PROMPT, solver_dir, args.solver_model,
-                              args.permission_mode, args.timeout,
-                              runs / f"round{round_no}-solver.txt")
-        (runs / f"round{round_no}-solver-summary.md").write_text(solver_reply,
-                                                                 encoding="utf-8")
-
-        log("grading the solver's patch")
-        result_file = runs / f"round{round_no}-grade.json"
-        graded = run([sys.executable, str(FACTORY / "grade.py"),
-                      "--task", args.task,
-                      "--patch", str(solver_dir / "environment"),
-                      "--json", str(result_file)])
-        print(graded.stdout[-2000:])
-        reward = "?"
-        if result_file.exists():
-            reward = json.loads(result_file.read_text()).get("reward", "?")
+        worst = "0" if all(a["reward"] == "0" for a in attempts) else next(
+            a["reward"] for a in attempts if a["reward"] != "0")
+        reward = worst
 
         record = FACTORY / "records" / f"{args.task}-adversarial.md"
         record.parent.mkdir(exist_ok=True)
-        record.write_text(
-            f"# Adversarial run record for {args.task}\n\n"
-            f"reward: {reward}\n\n"
-            f"solver model: {args.solver_model}\n"
-            f"date: {datetime.date.today()}\n"
-            f"round: {round_no}\n\n"
-            f"## Grading\n\n```\n{graded.stdout[-1500:]}\n```\n\n"
-            f"## What the solver said\n\n{solver_reply[:6000]}\n",
-            encoding="utf-8")
+        lines = [f"# Adversarial run record for {args.task}", "",
+                 f"reward: {reward}", f"attempts: {len(attempts)}",
+                 f"date: {datetime.date.today()}", f"round: {round_no}", ""]
+        for index, attempt in enumerate(attempts, 1):
+            lines += [f"## Attempt {index} ({attempt['model']}) -> "
+                      f"reward {attempt['reward']}", "",
+                      "```", attempt["graded"], "```", "",
+                      attempt["summary"][:4000], ""]
+        record.write_text("\n".join(lines), encoding="utf-8")
 
         if reward == "0":
             log("the solver failed. Running the gate one last time.")
@@ -324,14 +335,16 @@ def main() -> int:
             feedback = ("The final gate still fails:\n\n" + final.stdout[-3000:])
             continue
 
-        log(f"the solver scored {reward}. Feeding its reasoning back.")
+        winner = next(a for a in attempts if a["reward"] != "0")
+        log(f"attempt {len(attempts)} ({winner['model']}) scored "
+            f"{winner['reward']}. Feeding its reasoning back.")
         feedback = (
-            "A solver agent repaired your task and scored "
-            f"{reward}. That means it is not hard enough yet. Its own account of "
-            "how it did it is below. Find the shortcut it used, close it, and "
-            "redesign whatever defect it walked through. Do not simply move the "
-            "same defect somewhere else.\n\n"
-            "----- solver transcript -----\n" + solver_reply[:8000])
+            f"An independent solver agent ({winner['model']}) repaired your task "
+            f"and scored {winner['reward']}, so it is not hard enough yet. Its own "
+            "account of how it did it is below. Find the shortcut it used, close "
+            "it, and redesign whatever defect it walked through. Do not simply "
+            "move the same defect somewhere else.\n\n"
+            "----- solver transcript -----\n" + winner["summary"][:8000])
 
     log(f"ran out of rounds after {args.rounds}. See {runs} for every transcript.")
     return 1

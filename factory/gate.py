@@ -56,6 +56,9 @@ BANNED_INSTRUCTION = re.compile(
     re.I,
 )
 
+# One agent failing to repair the task can be luck. Several cannot.
+MIN_SOLVER_ATTEMPTS = 3
+
 FAILURES: list[str] = []
 WARNINGS: list[str] = []
 
@@ -366,16 +369,25 @@ def check_adversarial(task: pathlib.Path) -> None:
         return
     text = record.read_text(encoding="utf-8")
     match = re.search(r"^reward:\s*(\S+)", text, re.M)
+    attempts = re.search(r"^attempts:\s*(\d+)", text, re.M)
     if not match:
         fail("adversarial", "record has no 'reward:' line")
-    elif match.group(1) == "REPLACE_ME":
+        return
+    if match.group(1) == "REPLACE_ME":
         fail("adversarial", "record is still a stub")
-    elif match.group(1) != "0":
+        return
+    if match.group(1) != "0":
         fail("adversarial",
              f"a solver scored {match.group(1)}; the task did not defeat it. "
              f"Read its reasoning, close the shortcut, rebuild.")
+        return
+    count = int(attempts.group(1)) if attempts else 1
+    if count < MIN_SOLVER_ATTEMPTS:
+        fail("adversarial",
+             f"only {count} independent solver attempt(s) recorded; "
+             f"{MIN_SOLVER_ATTEMPTS} are required. One agent failing can be luck.")
     else:
-        ok("adversarial", "a solver attempt scored 0")
+        ok("adversarial", f"{count} independent solver attempts, all scored 0")
 
 
 def check_archive(task: pathlib.Path) -> None:
