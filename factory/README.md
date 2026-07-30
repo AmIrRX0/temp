@@ -4,9 +4,18 @@ Tooling for building further Harbor tasks the way `task5/` was built.
 
 ```
 factory/
-├── BUILD_PROMPT.md    # paste this into a fresh Claude Code session
-├── STANDARDS.md       # YOU must add this: the acceptance standards doc
-└── gate.py            # mechanical acceptance gate -- the loop's stopping rule
+├── BUILD_PROMPT.md      # paste this into a fresh Claude Code session
+├── STANDARDS.md         # YOU must add this: the acceptance standards doc
+├── preflight.py         # is the factory set up? run this first
+├── gate.py              # mechanical acceptance gate -- the loop's stopping rule
+└── make_solver_zip.py   # answer-free package for the adversarial run
+```
+
+```powershell
+python factory\preflight.py                        # before anything
+python factory\gate.py --task task6 --static-only
+python factory\gate.py --task task6
+python factory\make_solver_zip.py --task task6     # for the adversarial session
 ```
 
 ## Before the first run
