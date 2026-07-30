@@ -59,6 +59,28 @@ BANNED_INSTRUCTION = re.compile(
 # One agent failing to repair the task can be luck. Several cannot.
 MIN_SOLVER_ATTEMPTS = 3
 
+
+def fingerprint(task: pathlib.Path) -> str:
+    """Identity of the thing being graded: the library plus the suite.
+
+    Difficulty evidence is only evidence for the version it was collected
+    against. Edit the library after a sweep and the old grades stop meaning
+    anything, so they are bound to this.
+    """
+    import hashlib
+
+    digest = hashlib.sha256()
+    for root in ("environment", "tests"):
+        base = task / root
+        if not base.exists():
+            continue
+        for path in sorted(base.rglob("*")):
+            if not path.is_file() or "__pycache__" in path.parts:
+                continue
+            digest.update(str(path.relative_to(task)).replace("\\", "/").encode())
+            digest.update(path.read_bytes().replace(b"\r\n", b"\n"))
+    return digest.hexdigest()[:16]
+
 FAILURES: list[str] = []
 WARNINGS: list[str] = []
 
@@ -359,35 +381,63 @@ def check_isolation(task: pathlib.Path) -> None:
 
 
 def check_adversarial(task: pathlib.Path) -> None:
-    """A task nobody tried to break is not known to be hard."""
+    """A task nobody tried to break is not known to be hard.
+
+    The evidence has to be machine written. A prose record is something an agent
+    can fill in from memory, or from a sweep it ran before its last edit, and
+    self-declared success is the exact failure this whole gate exists to stop.
+    So the grades are read from the JSON `factory/grade.py` emits, and each one
+    carries the fingerprint of the library and suite it ran against.
+    """
+    current = fingerprint(task)
+    grade_dir = task.parent / "factory" / "records" / task.name
+    grades = sorted(grade_dir.glob("grade-*.json")) if grade_dir.exists() else []
+
+    if not grades:
+        fail("adversarial", f"no machine-written grades in {grade_dir}")
+        fail("adversarial",
+             "run factory/orchestrate.py, or hand make_solver_zip output to "
+             "solver sessions and score each with factory/grade.py --json")
+        return
+
+    matching, stale = [], []
+    for path in grades:
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            fail("adversarial", f"{path.name} is not valid JSON")
+            continue
+        (matching if payload.get("fingerprint") == current else stale).append(
+            (path, payload))
+
+    if stale:
+        fail("adversarial",
+             f"{len(stale)} grade(s) were collected against a different version "
+             f"of the library or suite; they prove nothing about this one. "
+             f"Re-run the sweep.")
+    won = [p for p, payload in matching if payload.get("reward") != "0"]
+    for path in won:
+        fail("adversarial", f"{path.name}: a solver scored 1; the task did not "
+                            f"defeat it. Close the shortcut and rebuild.")
+    if won:
+        return
+    if len(matching) < MIN_SOLVER_ATTEMPTS:
+        fail("adversarial",
+             f"only {len(matching)} graded attempt(s) against this version; "
+             f"{MIN_SOLVER_ATTEMPTS} are required. One agent failing is luck.")
+        return
+    models = [payload.get("model", "?") for _, payload in matching]
+    ok("adversarial",
+       f"{len(matching)} graded attempts against this version, all scored 0 "
+       f"({', '.join(models)})")
+
     record = task.parent / "factory" / "records" / f"{task.name}-adversarial.md"
     if not record.exists():
-        fail("adversarial", f"no record at {record.relative_to(task.parent)}")
-        fail("adversarial",
-             "hand factory/make_solver_zip.py output to a solver in a SEPARATE "
-             "session, grade its patch yourself, and write the result down")
+        warn("adversarial", "no human-readable record beside the grades")
         return
     text = record.read_text(encoding="utf-8")
-    match = re.search(r"^reward:\s*(\S+)", text, re.M)
-    attempts = re.search(r"^attempts:\s*(\d+)", text, re.M)
-    if not match:
-        fail("adversarial", "record has no 'reward:' line")
-        return
-    if match.group(1) == "REPLACE_ME":
-        fail("adversarial", "record is still a stub")
-        return
-    if match.group(1) != "0":
-        fail("adversarial",
-             f"a solver scored {match.group(1)}; the task did not defeat it. "
-             f"Read its reasoning, close the shortcut, rebuild.")
-        return
-    count = int(attempts.group(1)) if attempts else 1
-    if count < MIN_SOLVER_ATTEMPTS:
-        fail("adversarial",
-             f"only {count} independent solver attempt(s) recorded; "
-             f"{MIN_SOLVER_ATTEMPTS} are required. One agent failing can be luck.")
-    else:
-        ok("adversarial", f"{count} independent solver attempts, all scored 0")
+    if "REPLACE_ME" in text:
+        warn("adversarial", "the written record is still a stub")
 
 
 def check_archive(task: pathlib.Path) -> None:

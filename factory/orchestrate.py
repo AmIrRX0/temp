@@ -297,10 +297,15 @@ def main() -> int:
             reply = claude(SOLVER_PROMPT, solver_dir, model,
                            args.permission_mode, args.timeout,
                            runs / f"{label}.txt")
-            result_file = runs / f"{label}-grade.json"
+            # Grades land where the gate looks for them, stamped with the
+            # fingerprint of the version they were collected against.
+            evidence = FACTORY / "records" / args.task
+            evidence.mkdir(parents=True, exist_ok=True)
+            result_file = evidence / f"grade-{label}.json"
             graded = run([sys.executable, str(FACTORY / "grade.py"),
                           "--task", args.task,
                           "--patch", str(solver_dir / "environment"),
+                          "--model", model,
                           "--json", str(result_file)])
             got = "?"
             if result_file.exists():

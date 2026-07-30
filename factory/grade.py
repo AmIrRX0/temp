@@ -23,7 +23,8 @@ gate = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(gate)
 
 
-def grade(task: pathlib.Path, patch: pathlib.Path) -> tuple[int, dict]:
+def grade(task: pathlib.Path, patch: pathlib.Path,
+          model: str = "unknown") -> tuple[int, dict]:
     config = json.loads((task / "tests" / "config.json").read_text(encoding="utf-8"))
     f2p, p2p = config["fail_to_pass"], config["pass_to_pass"]
 
@@ -48,6 +49,8 @@ def grade(task: pathlib.Path, patch: pathlib.Path) -> tuple[int, dict]:
     gate.stage(package, staged)
 
     reward, report = gate.run_suite(tag, staged, tests, tmp / "logs", gpus)
+    stamp = {"task": task.name, "fingerprint": gate.fingerprint(task),
+             "reward": reward, "report": report, "model": model}
     still_failing = [n for n in f2p if report.get(n) != "PASSED"]
     regressed = [n for n in p2p if report.get(n) != "PASSED"]
 
@@ -62,27 +65,40 @@ def grade(task: pathlib.Path, patch: pathlib.Path) -> tuple[int, dict]:
     for name in regressed:
         print(f"  !! regressed       {name} -> {report.get(name)}")
     print()
+    stamp["still_failing"] = still_failing
+    stamp["regressed"] = regressed
     if reward == "1":
         print("VERDICT: this attempt would score 1. The task did not defeat it.")
-        return 1, {"reward": reward, "still_failing": still_failing,
-                   "regressed": regressed}
+        return 1, stamp
     print("VERDICT: this attempt would score 0. The task defeated it.")
-    return 0, {"reward": reward, "still_failing": still_failing,
-               "regressed": regressed}
+    return 0, stamp
 
 
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--task", required=True)
     parser.add_argument("--patch", required=True)
-    parser.add_argument("--json", help="also write the result here")
+    parser.add_argument("--model", default="unknown",
+                        help="which model produced this patch, for the record")
+    parser.add_argument("--json", help="write the machine-readable grade here. "
+                        "Default: factory/records/<task>/grade-<n>.json, which "
+                        "is where the gate looks for difficulty evidence.")
     args = parser.parse_args()
 
     task = pathlib.Path(args.task).resolve()
     patch = pathlib.Path(args.patch).resolve()
-    code, result = grade(task, patch)
+    code, result = grade(task, patch, args.model)
+
     if args.json:
-        pathlib.Path(args.json).write_text(json.dumps(result, indent=2))
+        destination = pathlib.Path(args.json)
+    else:
+        folder = HERE / "records" / task.name
+        folder.mkdir(parents=True, exist_ok=True)
+        index = len(list(folder.glob("grade-*.json"))) + 1
+        destination = folder / f"grade-{index:02d}.json"
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_text(json.dumps(result, indent=2), encoding="utf-8")
+    print(f"grade written to {destination}")
     return code
 
 

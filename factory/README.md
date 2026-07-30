@@ -95,13 +95,24 @@ Exit code 0 only when every check passes. What it decides:
 | solve.sh | not applying, or applying twice |
 | no-exemplar | a patched line appearing verbatim in another file |
 | isolation | a **sibling** task directory being modified (shared tooling is fine) |
-| adversarial | no record, a reward other than 0, or fewer than 3 independent solver attempts |
+| adversarial | fewer than 3 machine-written grades for **this exact version**, or any of them scoring 1 |
 | archive | backslash entries, a wrapper folder, missing root `instruction.md` |
 | nop | reward != 0, or anything ERRORing, or the wrong set failing |
 | oracle | reward != 1 |
 
 It reports but does not decide: library size, structurally similar lines near
 the patch, instruction length. Read those.
+
+## Difficulty evidence cannot be written by hand
+
+`factory/grade.py` writes a JSON grade into `factory/records/<task>/`, stamped
+with a fingerprint of the library and the suite it ran against. The gate reads
+those files, not prose. Two consequences worth knowing:
+
+- An agent cannot satisfy the gate by writing a number down. The number has to
+  come from a container run against the real suite.
+- Editing the library after a sweep invalidates the evidence, and the gate says
+  so rather than passing on stale grades. Re-run the sweep after any change.
 
 ## What the gate cannot do
 
