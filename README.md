@@ -20,6 +20,8 @@ task5/                      # zip root
 tools/
 ├── verify_first.py         # probes the two mechanisms with actionable diagnostics
 ├── verify_harness.py       # runs the real verifier on a GPU without Harbor
+├── make_solver_zip.py      # answer-free package for difficulty measurement
+├── solver_env.Dockerfile   # neutral GPU image for the solver experiment
 └── make_zip.py             # forward-slash, LF-normalising archive builder
 ```
 
