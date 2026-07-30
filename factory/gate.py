@@ -327,27 +327,32 @@ def check_no_exemplar(task: pathlib.Path, fixed: pathlib.Path | None) -> None:
 
 
 def check_isolation(task: pathlib.Path) -> None:
-    """Nothing outside this task and the factory may be modified.
+    """No OTHER task directory may be modified.
 
-    Every idea gets its own directory. Editing a finished task in place is how a
-    verified submission silently stops being verified.
+    Every idea gets its own directory, and editing a finished one in place is how
+    a verified submission silently stops being verified. Shared tooling and the
+    factory are fair game: this guards sibling tasks, not the whole tree.
     """
     out = subprocess.run(["git", "status", "--porcelain"],
                          cwd=task.parent, capture_output=True, text=True)
     if out.returncode != 0:
         warn("isolation", "not a git repo; cannot check")
         return
-    allowed = (task.name + "/", "factory/")
+    siblings = {p.name for p in task.parent.iterdir()
+                if p.is_dir() and re.fullmatch(r"task\d+", p.name) and p != task}
     stray = []
     for line in out.stdout.splitlines():
-        path = line[3:].strip().strip('"')
-        if path and not path.startswith(allowed):
-            stray.append(path)
+        code, path = line[:2], line[3:].strip().strip('"')
+        top = path.split("/", 1)[0]
+        if top in siblings:
+            stray.append(f"[{code.strip()}] {path}")
     if stray:
-        for path in sorted(set(stray))[:10]:
-            fail("isolation", f"modified outside the task: {path}")
+        for item in sorted(set(stray))[:10]:
+            fail("isolation", f"another task is modified: {item}")
+    elif siblings:
+        ok("isolation", f"no changes in {', '.join(sorted(siblings))}")
     else:
-        ok("isolation", "no changes outside this task or factory/")
+        ok("isolation", "no sibling tasks to protect")
 
 
 def check_adversarial(task: pathlib.Path) -> None:

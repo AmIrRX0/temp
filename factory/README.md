@@ -60,6 +60,8 @@ Exit code 0 only when every check passes. What it decides:
 | leakage | a mechanism word inside the library the agent reads |
 | solve.sh | not applying, or applying twice |
 | no-exemplar | a patched line appearing verbatim in another file |
+| isolation | a **sibling** task directory being modified (shared tooling is fine) |
+| adversarial | no `factory/records/<task>-adversarial.md`, or a reward other than 0 |
 | archive | backslash entries, a wrapper folder, missing root `instruction.md` |
 | nop | reward != 0, or anything ERRORing, or the wrong set failing |
 | oracle | reward != 1 |
