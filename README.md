@@ -138,8 +138,18 @@ Two honest caveats:
   now say so.
 
 B being findable matters less than it looks, because the suite is graded whole —
-an agent must fix **both** to score 1. The task's difficulty rests on A, which is
-still untested against a solver.
+an agent must fix **both** to score 1.
+
+**Graded result** (`tools/verify_harness.py --grade`, real suite, RTX 2050):
+
+    reward Harbor would give: 0
+      fail_to_pass fixed     4/8      <- defect B's four
+      pass_to_pass intact    21/21    <- clean fix, no collateral damage
+      still failing: the four transposed / strided full-size gather tests
+
+A second solver run, given the same package, reached the same place: `cache.py`
+found by reading, `gather.py` untouched, reward 0. Full record in
+`factory/records/task5-adversarial.md`.
 
 ## Environment lessons carried over from v1
 
