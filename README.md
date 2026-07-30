@@ -111,6 +111,31 @@ already widened.
 - `--independence` -> repairing A alone leaves B's four failing and vice versa,
   29/29 each way.
 
+## Solver result (first legitimate run, `make_solver_zip` package, no tests)
+
+The solver **did not fix the task**. It found defect B (the cache key) on attempt
+one and stopped, declaring success on its own 23-case suite. Defect A survived,
+so on real grading this submission scores **reward 0** — A's four `fail_to_pass`
+tests still fail.
+
+Two honest caveats:
+
+- **The run was blind to A.** It used `TRITON_INTERPRET=1` on CPU, and A needs a
+  >2 GiB CUDA allocation, so its baseline was 21 pass / 2 fail: its suite never
+  had a case that could trigger A. We learned nothing about A's resistance. The
+  next run must be on a GPU.
+- **Hardening B by adding `stride(-1)` to the key backfired.** The solver's
+  reasoning was "builds the key from shape, dtype, device, is_contiguous(),
+  stride(-1) and config but does not include stride(-2)". The prediction that a
+  `grep stride` hit would look reassuring was wrong: including one of two strides
+  puts the reader's eye on exactly the right line. Partial inclusion is a
+  stronger hint than total omission. B is the weaker defect and the reviewer docs
+  now say so.
+
+B being findable matters less than it looks, because the suite is graded whole —
+an agent must fix **both** to score 1. The task's difficulty rests on A, which is
+still untested against a solver.
+
 ## Environment lessons carried over from v1
 
 - **The `-runtime` base image has no C compiler.** Triton builds a CPython

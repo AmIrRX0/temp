@@ -33,11 +33,13 @@ key, so "the key ignores layout" is a false reading: it separates a packed table
 from a view, and a transpose or column slice from either. What it misses is two
 unpacked views of each other's shape whose trailing axis is packed in both, which
 agree on every element of the key and differ on the leading pitch, so the second
-table gathered is served the first one's pitches. Grepping for stride in that
-file finds a hit and looks reassuring; seeing the hole means noticing it is the
-wrong stride, reading a different file to find what the plan is derived from, and
-then constructing a sequence of calls to observe it, because every layout
-involved is correct when gathered on its own.
+table gathered is served the first one's pitches. This is the more findable of
+the two, stated plainly: a reader who lists the key's elements against what
+build_plan consumes can see the leading pitch is missing, and a solver agent
+given only the contract did exactly that on a first attempt. It stays in because
+the suite is graded whole, so it is a second thing that has to be understood, and
+observing it still needs a deliberate sequence of calls over two tables that any
+layout-by-layout probe misses. The width defect carries the difficulty.
 
 Nothing raises, nothing warns, and every shape and dtype is right throughout.
 The pass_to_pass set rewards the wrong hypotheses: size alone is fine, layout
