@@ -31,6 +31,7 @@ import argparse
 import datetime
 import json
 import pathlib
+import re
 import shutil
 import subprocess
 import sys
@@ -223,6 +224,12 @@ def main() -> int:
     for required in ("task", "idea", "name"):
         if not getattr(args, required):
             raise SystemExit(f"--{required} is required")
+
+    if args.task == "auto":
+        used = [int(m.group(1)) for d in REPO.iterdir()
+                if d.is_dir() and (m := re.fullmatch(r"task(\d+)", d.name))]
+        args.task = f"task{max(used) + 1 if used else 1}"
+        log(f"auto-selected {args.task}")
 
     runs = FACTORY / "runs" / args.task
     runs.mkdir(parents=True, exist_ok=True)

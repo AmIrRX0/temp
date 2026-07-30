@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import pathlib
+import re
 import shutil
 
 REPO = pathlib.Path(__file__).resolve().parent.parent
@@ -128,14 +129,21 @@ shortcut used (if it succeeded):
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--task", required=True, help="new directory, e.g. task6")
+    parser.add_argument("--task", required=True,
+                        help="new directory, e.g. task6, or 'auto' for the next free number")
     parser.add_argument("--idea", required=True, help="idea number from task_ideas.md")
     parser.add_argument("--name", required=True, help="python package name")
     parser.add_argument("--gpu", action="store_true")
     parser.add_argument("--deps", default="", help="extra pip deps for a CPU task")
     args = parser.parse_args()
 
-    task = REPO / args.task
+    name = args.task
+    if name == "auto":
+        used = [int(m.group(1)) for d in REPO.iterdir()
+                if d.is_dir() and (m := re.fullmatch(r"task(\d+)", d.name))]
+        name = f"task{max(used) + 1 if used else 1}"
+        print(f"auto-selected {name}")
+    task = REPO / name
     if task.exists():
         raise SystemExit(
             f"{task} already exists. Every idea gets its own directory and an "
