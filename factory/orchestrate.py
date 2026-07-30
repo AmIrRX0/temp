@@ -126,6 +126,36 @@ you found, what you verified by execution, and what you only inferred by reading
 """
 
 
+REVIEW_PROMPT = """You are reviewing a Harbor evaluation task that someone else
+built. You did not write it and you have no stake in it passing.
+
+The task is in `{task}/`. Its acceptance gate is green on everything mechanical.
+Two judgements are left that a script cannot make, and I want your verdict on
+each, with reasons.
+
+1. Does any file give the fix away? Run:
+
+       python factory/gate.py --task {task} --static-only
+
+   It prints the lines the solution patches, and every line elsewhere in the
+   library whose structure resembles them. For each pair, decide: does the
+   sibling merely show an idiom that any competent author would use, or does it
+   hand over the answer to someone who diffs the two? The distinction that
+   matters is whether copying the sibling across repairs the defect without
+   understanding it.
+
+2. Read `{task}/instruction.md` against the library. Does any sentence tell a
+   reader *when* the defect fires, as opposed to what the contract is and what
+   the symptom looks like? Quote anything that does.
+
+Also read the library for anything that names the mechanism in a comment,
+docstring or identifier.
+
+Answer in three parts: VERDICT (pass or change-needed), the specific lines that
+concern you, and what you would change. Do not edit anything.
+"""
+
+
 def make_solver_dir(task: str, workdir: pathlib.Path) -> pathlib.Path:
     archive = REPO / f"{task}_for_solver.zip"
     out = run([sys.executable, str(FACTORY / "make_solver_zip.py"),
@@ -274,10 +304,22 @@ def main() -> int:
                          "--task", args.task])
             print(final.stdout[-3000:])
             if final.returncode == 0:
-                log("GREEN. Two things are left, and both are yours:")
-                log(f"  1. rewrite {args.task}/instruction.md and "
-                    f"{args.task}/task_reasoning.md in your own words")
-                log("  2. review the gate's no-exemplar warnings by hand")
+                log("gate green. Running an independent review session.")
+                review = claude(REVIEW_PROMPT.format(task=args.task), REPO,
+                                args.builder_model, "acceptEdits", args.timeout,
+                                runs / f"round{round_no}-review.txt")
+                (runs / f"round{round_no}-review.md").write_text(review,
+                                                                encoding="utf-8")
+                print(review[:4000])
+                if "change-needed" in review.lower():
+                    feedback = ("An independent reviewer found problems the gate "
+                                "cannot catch. Address every one:\n\n" + review[:6000])
+                    continue
+                log("GREEN and reviewed. One thing is left, and it is yours:")
+                log(f"  rewrite {args.task}/instruction.md and "
+                    f"{args.task}/task_reasoning.md in your own words -- "
+                    f"model-written copy is grounds for removal")
+                log(f"  the builder's draft and the reviewer's notes are in {runs}")
                 return 0
             feedback = ("The final gate still fails:\n\n" + final.stdout[-3000:])
             continue

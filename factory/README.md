@@ -33,10 +33,14 @@ solver's patch is graded against the real suite; reward 0 ends the loop, reward 
 feeds its own account of the shortcut back to the builder and the next round
 starts. Every transcript lands in `factory/runs/<task>/`.
 
-It stops and hands back for three things it must not do: writing `instruction.md`
-and `task_reasoning.md` as final copy (project rules treat model-written copy as
-grounds for removal), judging whether a sibling file gives the answer away, and
-submitting.
+When the gate goes green a third session reviews the task with no stake in it
+passing: it judges whether any sibling file hands over the fix, and whether
+`instruction.md` names when the defect fires. A change-needed verdict feeds back
+to the builder and the loop continues.
+
+It stops and hands back for two things it must not do: writing `instruction.md`
+and `task_reasoning.md` as final copy, since project rules treat model-written
+copy as grounds for removal, and submitting.
 
 The builder edits files without asking. `--permission-mode acceptEdits` is the
 default; `bypassPermissions` also lets it run arbitrary commands. Decide which
